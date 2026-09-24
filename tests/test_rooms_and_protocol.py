@@ -21,6 +21,7 @@ def test_protocol_rejects_out_of_range_and_unknown_fields() -> None:
     for payload in (
         {"type": "input", "sequence": 1, "move_x": 2.0},
         {"type": "input", "sequence": 1, "unexpected": True},
+        {"type": "input", "sequence": 1, "client_tick": 1, "yaw": 0.0},
     ):
         try:
             CLIENT_MESSAGE_ADAPTER.validate_python(payload)
@@ -29,7 +30,7 @@ def test_protocol_rejects_out_of_range_and_unknown_fields() -> None:
         raise AssertionError("invalid client payload was accepted")
 
     parsed = CLIENT_MESSAGE_ADAPTER.validate_python(
-        {"type": "input", "sequence": 1, "move_z": 1.0}
+        {"type": "input", "sequence": 1, "client_tick": 1, "move_z": 1.0}
     )
     assert isinstance(parsed, InputMessage)
 
@@ -37,7 +38,7 @@ def test_protocol_rejects_out_of_range_and_unknown_fields() -> None:
 def test_server_tick_rate_requires_at_least_60_hz() -> None:
     defaults = Settings()
     assert defaults.tick_rate == 60
-    assert defaults.snapshot_interval_ticks == 1
+    assert defaults.snapshot_interval_ticks == 3
     try:
         Settings(tick_rate=59)
     except ValidationError:
@@ -95,9 +96,7 @@ def test_room_loop_runs_near_configured_fixed_tick_rate() -> None:
 
             assert 57.0 <= measured_rate <= 64.0
             metrics_snapshot = metrics.snapshot(1, len(sessions), settings.tick_rate)
-            assert metrics_snapshot[
-                "server_tick_rate_observed_1s_min_room"
-            ] >= 57
+            assert metrics_snapshot["server_tick_rate_observed_1s_min_room"] >= 57
             assert metrics_snapshot["snapshot_send_rate_1s"] >= 16 * 57
         finally:
             await manager.close()
@@ -136,23 +135,45 @@ def test_websocket_handshake_commands_snapshot_and_metrics(monkeypatch) -> None:
             async with httpx.AsyncClient() as client:
                 page_response = await client.get(f"{http_url}/")
                 assert page_response.status_code == 200
-                assert "Aster TPS Gameplay Test" in page_response.text
+                assert "Aster Character Motion Lab" in page_response.text
+                motion_asset = await client.get(f"{http_url}/web/motion/movement-solver.mjs")
+                assert motion_asset.status_code == 200
+                assert "javascript" in motion_asset.headers["content-type"]
+                assert "solveHorizontalVelocity" in motion_asset.text
 
             async with websockets.connect(f"ws://127.0.0.1:{port}/ws") as websocket:
-                await websocket.send(json.dumps({"type": "hello", "protocol_version": 1}))
+                await websocket.send(json.dumps({"type": "hello", "protocol_version": 2}))
                 welcome = json.loads(await asyncio.wait_for(websocket.recv(), 2.0))
                 assert welcome["type"] == "welcome"
+                assert welcome["protocol_version"] == 2
                 assert welcome["tick_rate"] == settings.tick_rate
+                assert welcome["snapshot_interval_ticks"] == settings.snapshot_interval_ticks
                 assert welcome["movement_tuning"] == {
                     "walk_speed": settings.walk_speed,
                     "run_speed": settings.run_speed,
                     "sprint_speed": settings.sprint_speed,
                     "air_control": settings.air_control,
+                    "ground_acceleration": settings.ground_acceleration,
+                    "braking_deceleration": settings.braking_deceleration,
+                    "ground_friction": settings.ground_friction,
+                    "air_acceleration": settings.air_acceleration,
+                    "air_max_speed": settings.air_max_speed,
+                    "max_rotation_speed": settings.max_rotation_speed,
+                    "rotation_acceleration": settings.rotation_acceleration,
+                    "rotation_deceleration": settings.rotation_deceleration,
+                    "turn_in_place_threshold": settings.turn_in_place_threshold,
+                    "pivot_angle_threshold": settings.pivot_angle_threshold,
+                    "jump_speed": settings.jump_speed,
+                    "gravity": settings.gravity,
+                    "max_fall_speed": settings.max_fall_speed,
+                    "apex_velocity_threshold": settings.apex_velocity_threshold,
+                    "jump_cooldown_seconds": settings.jump_cooldown_seconds,
+                    "landing_soft_velocity": settings.landing_soft_velocity,
+                    "landing_heavy_velocity": settings.landing_heavy_velocity,
+                    "landing_recovery_seconds": settings.landing_recovery_seconds,
                 }
 
-                await websocket.send(
-                    json.dumps({"type": "join_game", "player_name": "  Pilot  "})
-                )
+                await websocket.send(json.dumps({"type": "join_game", "player_name": "  Pilot  "}))
                 joined = json.loads(await asyncio.wait_for(websocket.recv(), 2.0))
                 assert joined["type"] == "joined"
 
@@ -168,11 +189,14 @@ def test_websocket_handshake_commands_snapshot_and_metrics(monkeypatch) -> None:
                         {
                             "type": "input",
                             "sequence": 7,
+                            "client_tick": 7,
                             "move_x": 0.0,
                             "move_z": 1.0,
                             "jump": False,
                             "sprint": True,
-                            "yaw": 0.0,
+                            "view_yaw": 0.0,
+                            "view_pitch": 0.0,
+                            "rotation_mode": "orient_to_movement",
                         }
                     )
                 )
@@ -186,6 +210,8 @@ def test_websocket_handshake_commands_snapshot_and_metrics(monkeypatch) -> None:
                         )
                         if player["last_processed_input"] == 7:
                             assert player["position"][2] > -12.0
+                            assert player["movement_mode"] == "grounded"
+                            assert "locomotion_phase" in player
                             break
                 else:
                     raise AssertionError("server did not acknowledge input in a snapshot")

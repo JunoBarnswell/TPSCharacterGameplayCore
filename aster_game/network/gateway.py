@@ -107,8 +107,8 @@ async def handle_websocket(
             _enqueue_error(session, "HELLO_REQUIRED", "The first message must be hello")
             session.request_close(1002, "hello required")
             return
-        if hello.protocol_version != 1:
-            _enqueue_error(session, "UNSUPPORTED_PROTOCOL", "Supported protocol version is 1")
+        if hello.protocol_version != 2:
+            _enqueue_error(session, "UNSUPPORTED_PROTOCOL", "Supported protocol version is 2")
             session.request_close(1002, "unsupported protocol")
             return
         session.protocol_version = hello.protocol_version
@@ -116,11 +116,30 @@ async def handle_websocket(
             WelcomeMessage(
                 session_id=session.session_id,
                 tick_rate=settings.tick_rate,
+                snapshot_interval_ticks=settings.snapshot_interval_ticks,
                 movement_tuning=MovementTuning(
                     walk_speed=settings.walk_speed,
                     run_speed=settings.run_speed,
                     sprint_speed=settings.sprint_speed,
                     air_control=settings.air_control,
+                    ground_acceleration=settings.ground_acceleration,
+                    braking_deceleration=settings.braking_deceleration,
+                    ground_friction=settings.ground_friction,
+                    air_acceleration=settings.air_acceleration,
+                    air_max_speed=settings.air_max_speed,
+                    max_rotation_speed=settings.max_rotation_speed,
+                    rotation_acceleration=settings.rotation_acceleration,
+                    rotation_deceleration=settings.rotation_deceleration,
+                    turn_in_place_threshold=settings.turn_in_place_threshold,
+                    pivot_angle_threshold=settings.pivot_angle_threshold,
+                    jump_speed=settings.jump_speed,
+                    gravity=settings.gravity,
+                    max_fall_speed=settings.max_fall_speed,
+                    apex_velocity_threshold=settings.apex_velocity_threshold,
+                    jump_cooldown_seconds=settings.jump_cooldown_seconds,
+                    landing_soft_velocity=settings.landing_soft_velocity,
+                    landing_heavy_velocity=settings.landing_heavy_velocity,
+                    landing_recovery_seconds=settings.landing_recovery_seconds,
                 ),
             ).model_dump(mode="json")
         )
@@ -194,11 +213,14 @@ async def handle_websocket(
                     continue
                 command = InputCommand(
                     sequence=message.sequence,
+                    client_tick=message.client_tick,
                     move_x=message.move_x,
                     move_z=message.move_z,
                     jump=message.jump,
                     sprint=message.sprint,
-                    yaw=message.yaw,
+                    view_yaw=message.view_yaw,
+                    view_pitch=message.view_pitch,
+                    rotation_mode=message.rotation_mode.value,
                 )
                 if not room.world.queue_input(session.entity_id, command):
                     _enqueue_error(

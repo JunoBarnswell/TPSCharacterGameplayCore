@@ -1,19 +1,13 @@
 from dataclasses import dataclass, field
-from enum import StrEnum
 
 from panda3d.bullet import BulletCharacterControllerNode
 from panda3d.core import NodePath
 
-
-class CharacterState(StrEnum):
-    IDLE = "idle"
-    WALK = "walk"
-    RUN = "run"
-    SPRINT = "sprint"
-    JUMP = "jump"
-    FALL = "fall"
-    HIT = "hit"
-    DEAD = "dead"
+from aster_game.game.movement.state import (
+    ActionLayer,
+    CharacterMovementState,
+    LifeState,
+)
 
 
 @dataclass(slots=True)
@@ -23,35 +17,22 @@ class TransformComponent:
 
 
 @dataclass(slots=True)
-class MovementComponent:
-    velocity: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    move_x: float = 0.0
-    move_z: float = 0.0
-    sprint: bool = False
-    jump_held: bool = False
-    jump_requested: bool = False
-    grounded: bool = False
-    last_input_tick: int = 0
-    last_processed_input: int = -1
-    last_jump_tick: int = -1_000_000
-    previous_position: tuple[float, float, float] = (0.0, 0.0, 0.0)
-
-
-@dataclass(slots=True)
 class HealthComponent:
     max_health: float
     current_health: float
-    alive: bool = True
     invulnerable_until_tick: int = 0
 
 
 @dataclass(slots=True)
 class FallComponent:
-    is_falling: bool = False
+    airborne: bool = False
+    apex_reached: bool = False
+    jump_started: bool = False
     start_y: float = 0.0
     start_tick: int = 0
     impact_velocity: float = 0.0
     last_vertical_velocity: float = 0.0
+    landing_started_tick: int = 0
 
 
 @dataclass(slots=True)
@@ -67,23 +48,32 @@ class Character:
     player_id: str
     player_name: str
     transform: TransformComponent
-    movement: MovementComponent
+    movement: CharacterMovementState
     health: HealthComponent
     fall: FallComponent
     physics: PhysicsComponent
-    state: CharacterState = CharacterState.IDLE
+    life_state: LifeState = LifeState.ALIVE
+    action_layer: ActionLayer = ActionLayer.NONE
+    hit_direction: tuple[float, float, float] | None = None
+    hit_region: str | None = None
+    hit_strength: float = 0.0
+    hit_source_position: tuple[float, float, float] | None = None
+    action_until_tick: int = 0
+    previous_channels: tuple[str, ...] | None = None
     attack_ready_tick: int = 0
-    hit_reaction_until_tick: int = 0
 
 
 @dataclass(slots=True)
 class InputCommand:
     sequence: int
+    client_tick: int
     move_x: float
     move_z: float
     jump: bool
     sprint: bool
-    yaw: float
+    view_yaw: float
+    view_pitch: float
+    rotation_mode: str
 
 
 @dataclass(slots=True)

@@ -1,9 +1,11 @@
+import mimetypes
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from aster_game.app.config import Settings, get_settings
 from aster_game.infrastructure.logging import configure_logging
@@ -29,6 +31,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="Aster Gameplay Server", version="0.1.0", lifespan=lifespan)
 TEST_PAGE = Path(__file__).parents[1] / "web" / "test_client.html"
+WEB_ASSETS = Path(__file__).parents[1] / "web"
+mimetypes.add_type("text/javascript", ".mjs")
+app.mount("/web", StaticFiles(directory=WEB_ASSETS), name="web-assets")
 
 
 @app.get("/", include_in_schema=False)

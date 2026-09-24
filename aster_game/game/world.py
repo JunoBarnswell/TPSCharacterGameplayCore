@@ -1,17 +1,18 @@
+from math import ceil
+
 from aster_game.app.config import Settings
 from aster_game.game.components import (
     Character,
-    CharacterState,
     FallComponent,
     HealthComponent,
     InputCommand,
-    MovementComponent,
     PendingCommands,
     PhysicsComponent,
     Projectile,
     TransformComponent,
 )
-from aster_game.game.events import DamageRequest, EventBus, GameplayEvent
+from aster_game.game.events import DamageRequest, EventBus, GameplayEvent, ResolvedDamage
+from aster_game.game.movement.state import ActionLayer, CharacterMovementState, LifeState
 from aster_game.game.physics import PhysicsWorld
 from aster_game.infrastructure.metrics import RuntimeMetrics
 
@@ -26,10 +27,14 @@ class GameWorld:
         metrics: RuntimeMetrics,
     ) -> None:
         from aster_game.game.systems import (
+            AirLifecycleSystem,
             AttackSystem,
             CommandSystem,
             DamageSystem,
-            FallSystem,
+            DeathSystem,
+            GroundSystem,
+            HealthSystem,
+            LocomotionPhaseSystem,
             MovementSystem,
             PhysicsStepSystem,
             ProjectileSystem,
@@ -48,6 +53,8 @@ class GameWorld:
         self.attack_requests: list[int] = []
         self.respawn_requests: set[int] = set()
         self.damage_requests: list[DamageRequest] = []
+        self.resolved_damage: list[ResolvedDamage] = []
+        self.death_requests: list[DamageRequest] = []
         self.events = EventBus()
         self.next_entity_id = 1
         self.next_projectile_id = 1
@@ -57,22 +64,22 @@ class GameWorld:
             CommandSystem(),
             MovementSystem(),
             PhysicsStepSystem(),
-            FallSystem(),
+            GroundSystem(),
+            AirLifecycleSystem(),
             AttackSystem(),
             ProjectileSystem(),
             DamageSystem(),
+            HealthSystem(),
+            DeathSystem(),
             RespawnSystem(),
+            LocomotionPhaseSystem(),
             StateSystem(),
         )
 
-    def _spawn_position(
-        self, exclude_entity_id: int | None = None
-    ) -> tuple[float, float, float]:
+    def _spawn_position(self, exclude_entity_id: int | None = None) -> tuple[float, float, float]:
         coordinates = (-12.0, -4.0, 4.0, 12.0)
         spawn_points = [
-            (x, self.settings.spawn_height, z)
-            for z in coordinates
-            for x in coordinates
+            (x, self.settings.spawn_height, z) for z in coordinates for x in coordinates
         ]
         for offset in range(len(spawn_points)):
             index = (self._spawn_index + offset) % len(spawn_points)
@@ -104,7 +111,7 @@ class GameWorld:
             player_id=player_id,
             player_name=player_name,
             transform=TransformComponent(position=position),
-            movement=MovementComponent(previous_position=position),
+            movement=CharacterMovementState(previous_position=position),
             health=HealthComponent(
                 max_health=self.settings.max_health,
                 current_health=self.settings.max_health,
@@ -154,7 +161,7 @@ class GameWorld:
 
     def queue_input(self, entity_id: int, command: InputCommand) -> bool:
         character = self.characters.get(entity_id)
-        if character is None or not character.health.alive:
+        if character is None or character.life_state is not LifeState.ALIVE:
             return False
         pending = self.pending.inputs.get(entity_id)
         last_sequence = max(
@@ -172,8 +179,8 @@ class GameWorld:
     def queue_attack(self, entity_id: int) -> bool:
         if entity_id not in self.characters:
             return False
-        pending_count = (
-            self.pending.attacks.count(entity_id) + self.attack_requests.count(entity_id)
+        pending_count = self.pending.attacks.count(entity_id) + self.attack_requests.count(
+            entity_id
         )
         if pending_count >= self.settings.max_pending_attacks_per_player:
             return False
@@ -211,19 +218,23 @@ class GameWorld:
         controller, node_path = self.physics.create_character(character.entity_id, position)
         character.physics = PhysicsComponent(controller=controller, node_path=node_path)
         character.transform.position = position
-        character.transform.yaw = 0.0
         last_processed_input = character.movement.last_processed_input
-        character.movement = MovementComponent(
+        character.movement = CharacterMovementState(
             previous_position=position,
             last_processed_input=last_processed_input,
         )
         character.health.current_health = character.health.max_health
-        character.health.alive = True
         character.health.invulnerable_until_tick = self.tick_id
         character.fall = FallComponent()
-        character.state = CharacterState.IDLE
+        character.life_state = LifeState.ALIVE
+        character.action_layer = ActionLayer.NONE
+        character.hit_direction = None
+        character.hit_region = None
+        character.hit_strength = 0.0
+        character.hit_source_position = None
+        character.action_until_tick = self.tick_id
+        character.previous_channels = None
         character.attack_ready_tick = self.tick_id
-        character.hit_reaction_until_tick = self.tick_id
         self.publish(
             "respawn",
             entity_id=character.entity_id,
@@ -254,12 +265,52 @@ class GameWorld:
                 "player_name": character.player_name,
                 "position": character.transform.position,
                 "velocity": character.movement.velocity,
-                "yaw": character.transform.yaw,
-                "state": character.state.value,
+                "acceleration": character.movement.acceleration,
+                "desired_velocity": character.movement.desired_velocity,
+                "desired_move_direction": character.movement.desired_move_direction,
+                "current_speed": character.movement.current_speed,
+                "horizontal_speed": character.movement.horizontal_speed,
+                "vertical_speed": character.movement.vertical_speed,
+                "grounded": character.movement.grounded,
+                "floor_normal": character.movement.floor_normal,
+                "floor_distance": (
+                    character.movement.floor_distance
+                    if character.movement.floor_distance != float("inf")
+                    else None
+                ),
+                "walkable_floor": character.movement.walkable_floor,
+                "slope_angle": character.movement.slope_angle,
+                "ground_contact_point": character.movement.ground_contact_point,
+                "ground_entity": character.movement.ground_entity,
+                "movement_mode": character.movement.movement_mode.value,
+                "gait": character.movement.gait.value,
+                "character_yaw": character.movement.character_yaw,
+                "desired_facing_yaw": character.movement.desired_facing_yaw,
+                "angular_velocity": character.movement.angular_velocity,
+                "yaw_rate": character.movement.yaw_rate,
+                "view_yaw": character.movement.view_yaw,
+                "view_pitch": character.movement.view_pitch,
+                "aim_yaw": character.movement.aim_yaw,
+                "aim_pitch": character.movement.aim_pitch,
+                "rotation_mode": character.movement.rotation_mode.value,
+                "locomotion_phase": character.movement.locomotion_phase.value,
+                "phase_until_tick": character.movement.phase_until_tick,
+                "landing_recovery_until_tick": character.movement.landing_recovery_until_tick,
+                "turn_angle": character.movement.turn_angle,
+                "landing_impact_velocity": character.fall.impact_velocity,
+                "jump_held": character.movement.jump_held,
+                "action_layer": character.action_layer.value,
+                "life_state": character.life_state.value,
+                "hit_direction": character.hit_direction,
+                "hit_region": character.hit_region,
+                "hit_strength": character.hit_strength,
+                "hit_source_position": character.hit_source_position,
                 "health": character.health.current_health,
                 "max_health": character.health.max_health,
-                "alive": character.health.alive,
                 "last_processed_input": character.movement.last_processed_input,
+                "last_client_tick": character.movement.last_client_tick,
+                "jump_available_tick": character.movement.last_jump_tick
+                + ceil(self.settings.jump_cooldown_seconds * self.settings.tick_rate),
             }
             for character in self.characters.values()
         ]
