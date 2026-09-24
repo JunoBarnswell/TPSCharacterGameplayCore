@@ -11,6 +11,7 @@ from aster_game.infrastructure.metrics import RuntimeMetrics
 from aster_game.network.messages import (
     CLIENT_MESSAGE_ADAPTER,
     AttackMessage,
+    CollisionWorldProfile,
     HelloMessage,
     InputMessage,
     JoinedMessage,
@@ -107,8 +108,8 @@ async def handle_websocket(
             _enqueue_error(session, "HELLO_REQUIRED", "The first message must be hello")
             session.request_close(1002, "hello required")
             return
-        if hello.protocol_version != 3:
-            _enqueue_error(session, "UNSUPPORTED_PROTOCOL", "Supported protocol version is 3")
+        if hello.protocol_version != 4:
+            _enqueue_error(session, "UNSUPPORTED_PROTOCOL", "Supported protocol version is 4")
             session.request_close(1002, "unsupported protocol")
             return
         session.protocol_version = hello.protocol_version
@@ -156,7 +157,10 @@ async def handle_websocket(
                     ground_grace_distance=settings.ground_grace_distance,
                     ground_grace_ticks=settings.ground_grace_ticks,
                     character_step_height=settings.character_step_height,
+                    character_radius=settings.character_radius,
+                    character_cylinder_height=settings.character_cylinder_height,
                 ),
+                collision_world=CollisionWorldProfile.model_validate(rooms.collision_profile),
             ).model_dump(mode="json")
         )
 

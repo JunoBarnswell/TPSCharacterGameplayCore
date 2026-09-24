@@ -301,6 +301,7 @@
               <div class="stat-cell"><span>AIM YAW · AIM PITCH</span><strong id="aimValue">—</strong></div>
               <div class="stat-cell"><span>YAW RATE</span><strong id="yawRateValue">—</strong></div>
               <div class="stat-cell"><span>PREDICTED · AUTH · CORRECTION</span><strong id="correctionValue">—</strong></div>
+              <div class="stat-cell"><span>POS · ROT · VEL ERROR · RECONCILIATIONS</span><strong id="predictionErrorValue">—</strong></div>
               <div class="stat-cell"><span>OWNER SMOOTHING · SNAP DISTANCE</span><strong id="ownerSmoothingValue">—</strong></div>
               <div class="stat-cell"><span>REMOTE DELAY · EXTRAPOLATION · TELEPORT</span><strong id="remoteMotionValue">—</strong></div>
               <div class="stat-cell"><span>SIM HZ · SNAP HZ · RENDER FPS</span><strong id="ratesValue">—</strong></div>
@@ -342,6 +343,7 @@
     "use strict";
 
     import { NetworkSimulator, PredictionHistory, RemoteSnapshotBuffer, VisualSmoothing } from "/web/motion/network-motion.mjs";
+    import { CollisionWorld } from "/web/motion/collision-world.mjs";
     import { createMotionFrame, MotionHistory, PoseHistory, predictTrajectory } from "/web/motion/motion-frame.mjs";
     import { evaluateAnimationGraph } from "/web/animation/animation-graph.mjs";
 
@@ -355,6 +357,7 @@
       predictionHistoryLimit: 256,
       ownerCorrectionSmoothingSeconds: 0.12,
       ownerSnapDistance: 3.0,
+      largeCorrectionThreshold: 0.5,
       remoteInterpolationDelaySeconds: 0.1,
       maxRemoteExtrapolationSeconds: 0.1,
       remoteTeleportThreshold: 10.0,
@@ -379,8 +382,12 @@
     let snapshotIntervalTicks = 3;
     let snapshotRate = 0;
     let movementTuning = null;
+    let collisionWorld = null;
     let authoritativeSelf = null;
-    const prediction = new PredictionHistory(networkMotionSettings.predictionHistoryLimit);
+    const prediction = new PredictionHistory(
+      networkMotionSettings.predictionHistoryLimit,
+      networkMotionSettings.largeCorrectionThreshold,
+    );
     const smoother = new VisualSmoothing(
       networkMotionSettings.ownerCorrectionSmoothingSeconds,
       networkMotionSettings.ownerSnapDistance,
@@ -473,6 +480,7 @@
       $("serverRateValue").textContent = "—";
       $("snapshotRateValue").textContent = "—";
       movementTuning = null;
+      collisionWorld = null;
       authoritativeSelf = null;
       prediction.state = null;
       prediction.inputs = [];
@@ -499,7 +507,7 @@
 
       socket.addEventListener("open", () => {
         setConnection("connected", "Connected · joining");
-        send({ type: "hello", protocol_version: 3 });
+        send({ type: "hello", protocol_version: 4 });
       });
       socket.addEventListener("message", (event) => {
         let message;
@@ -552,7 +560,8 @@
           "landing_soft_velocity", "landing_heavy_velocity", "landing_recovery_seconds",
           "max_walkable_slope", "ground_probe_radius", "ground_probe_depth",
           "ground_probe_start_offset", "ground_snap_distance", "ground_grace_distance",
-          "ground_grace_ticks", "character_step_height",
+          "ground_grace_ticks", "character_step_height", "character_radius",
+          "character_cylinder_height",
         ];
         const curveKeys = [
           "walk_acceleration_curve", "run_acceleration_curve", "sprint_acceleration_curve",
@@ -588,10 +597,27 @@
           tuning.jump_speed > 0 && tuning.gravity > 0 && tuning.max_fall_speed > 0 &&
           tuning.jump_cooldown_seconds >= 0 && tuning.landing_soft_velocity >= 0 &&
           tuning.landing_heavy_velocity > tuning.landing_soft_velocity &&
-          tuning.landing_recovery_seconds >= 0;
-        if (message.protocol_version !== 3 || !Number.isInteger(message.tick_rate) || message.tick_rate < 60 || message.tick_rate > 120 || !Number.isInteger(message.snapshot_interval_ticks) || message.snapshot_interval_ticks < 1 || !validTuning) {
+          tuning.landing_recovery_seconds >= 0 && tuning.ground_probe_radius > 0 &&
+          tuning.ground_probe_depth > 0 && tuning.ground_snap_distance >= 0 &&
+          tuning.character_radius > 0 && tuning.character_cylinder_height > 0 &&
+          tuning.character_step_height >= 0;
+        const profile = message.collision_world;
+        const isVector3 = (value) => Array.isArray(value) && value.length === 3 &&
+          value.every(Number.isFinite);
+        const validProfile = profile?.version === 1 && Array.isArray(profile.planes) &&
+          Array.isArray(profile.boxes) && Array.isArray(profile.ramps) &&
+          profile.planes.every((plane) => typeof plane.name === "string" &&
+            isVector3(plane.normal) && Number.isFinite(plane.constant)) &&
+          profile.boxes.every((box) => typeof box.name === "string" &&
+            isVector3(box.center) && isVector3(box.half_extents) &&
+            box.half_extents.every((value) => value > 0)) &&
+          profile.ramps.every((ramp) => typeof ramp.name === "string" &&
+            isVector3(ramp.center) && isVector3(ramp.half_extents) &&
+            ramp.half_extents.every((value) => value > 0) &&
+            Number.isFinite(ramp.pitch_degrees));
+        if (message.protocol_version !== 4 || !Number.isInteger(message.tick_rate) || message.tick_rate < 60 || message.tick_rate > 120 || !Number.isInteger(message.snapshot_interval_ticks) || message.snapshot_interval_ticks < 1 || !validTuning || !validProfile) {
           setConnection("error", "Server must support 60 Hz");
-          addEvent("Server must provide 60–120 Hz tick_rate and valid movement_tuning.", "error");
+          addEvent("Server must provide 60–120 Hz tick_rate, valid movement_tuning and collision_world.", "error");
           socket?.close(1002, "unsupported simulation rate or missing movement tuning");
           return;
         }
@@ -600,6 +626,7 @@
         $("serverRateValue").textContent = String(tickRate);
         $("snapshotRateValue").textContent = (tickRate / snapshotIntervalTicks).toFixed(1);
         movementTuning = message.movement_tuning;
+        collisionWorld = new CollisionWorld(profile);
         addEvent(`Protocol ${message.protocol_version} · simulation ${message.tick_rate} Hz · snapshots ${(tickRate / snapshotIntervalTicks).toFixed(1)} Hz`);
         const room = $("roomId").value.trim();
         send({
@@ -654,7 +681,13 @@
           if (acknowledged) lastAckDelayMs = Math.max(0, performance.now() - acknowledged.sentAt);
           const authoritativeMotion = { ...authoritativeSelf, server_tick: message.tick, simulation_tick: message.tick };
           const corrected = prediction.state
-            ? prediction.reconcile(authoritativeMotion, authoritativeSelf.last_processed_input, movementTuning, 1 / tickRate)
+            ? prediction.reconcile(
+              authoritativeMotion,
+              authoritativeSelf.last_processed_input,
+              movementTuning,
+              1 / tickRate,
+              collisionWorld,
+            )
             : (prediction.reset(authoritativeMotion), prediction.state);
           smoother.correct(previousVisual, corrected.position);
           lastAcknowledgedInput = Math.max(lastAcknowledgedInput, authoritativeSelf.last_processed_input);
@@ -724,7 +757,7 @@
       delete wireInput.sentAt;
       if (!send(wireInput)) return;
       if (authoritativeSelf && prediction.state && movementTuning) {
-        prediction.predict(input, movementTuning, 1 / tickRate);
+        prediction.predict(input, movementTuning, 1 / tickRate, collisionWorld);
       }
       lastInputSentAt = now;
       sequence++;
@@ -813,6 +846,9 @@
       const predicted = predictPosition() || self.position;
       const correction = Math.hypot(...predicted.map((value, index) => value - self.position[index]));
       $("correctionValue").textContent = `${formatVector([predicted[0], predicted[2]])} · ${formatVector([self.position[0], self.position[2]])} · ${correction.toFixed(2)} m`;
+      const predictionMetrics = prediction.metrics;
+      $("predictionErrorValue").textContent =
+        `${predictionMetrics.position_error.toFixed(2)} m · ${predictionMetrics.rotation_error.toFixed(1)}° · ${predictionMetrics.velocity_error.toFixed(2)} m/s · ${predictionMetrics.reconciliation_count} (${predictionMetrics.large_correction_count} large)`;
       $("ownerSmoothingValue").textContent =
         `${Math.round(networkMotionSettings.ownerCorrectionSmoothingSeconds * 1000)} ms · ${networkMotionSettings.ownerSnapDistance.toFixed(1)} m`;
       $("remoteMotionValue").textContent =

@@ -179,7 +179,7 @@ export function solveRotation(currentYaw, angularVelocity, desiredYaw, dt, tunin
   return { yaw: normalizeDegrees(currentYaw + applied), angularVelocity: nextRate };
 }
 
-export function predictMovementStep(state, input, tuning, dt) {
+export function predictMovementStep(state, input, tuning, dt, collisionWorld = null) {
   if (state.life_state === "dead") return { ...state, last_processed_input: input.sequence };
   const desired = desiredMotion(input, tuning);
   const grounded = state.grounded && state.walkable_floor !== false;
@@ -231,9 +231,32 @@ export function predictMovementStep(state, input, tuning, dt) {
     else if (phase === "apex" && vy < -apexThreshold) phase = "falling";
     else if (!state.grounded && vy <= -apexThreshold && !["jump_start", "rising"].includes(phase)) phase = "falling";
   } else {
-    vy = 0;
+    const normal = state.floor_normal ?? [0, 1, 0];
+    vy = normal[1] > 1e-4
+      ? -(normal[0] * solved.velocity[0] + normal[2] * solved.velocity[2]) / normal[1]
+      : 0;
+    y += vy * dt;
   }
-  if (state.movement_mode === "airborne" && nextGrounded) {
+  const position = [
+    state.position[0] + solved.velocity[0] * dt,
+    y,
+    state.position[2] + solved.velocity[2] * dt,
+  ];
+  let velocity = [solved.velocity[0], vy, solved.velocity[2]];
+  let collision = null;
+  if (collisionWorld) {
+    collision = collisionWorld.moveCharacter(
+      { ...state, grounded: grounded && !jumpPressed },
+      position,
+      velocity,
+      tuning,
+      dt,
+    );
+    position.splice(0, 3, ...collision.position);
+    velocity = collision.velocity;
+    nextGrounded = collision.grounded;
+  }
+  if ((collision?.landed ?? false) || (state.movement_mode === "airborne" && nextGrounded)) {
     const impact = Math.max(Math.abs(state.vertical_speed ?? 0), state.landing_impact_velocity ?? 0);
     phase = impact < tuning.landing_soft_velocity
       ? "soft_land"
@@ -303,17 +326,15 @@ export function predictMovementStep(state, input, tuning, dt) {
   const turnAngle = phase === "turn_in_place"
     ? Math.min(180, Math.max(45, Math.round(Math.abs(angleDelta(input.view_yaw, state.character_yaw)) / 45) * 45))
     : Number(state.turn_angle ?? 0);
-  const position = [
-    state.position[0] + solved.velocity[0] * dt,
-    y,
-    state.position[2] + solved.velocity[2] * dt,
-  ];
-  const velocity = [solved.velocity[0], vy, solved.velocity[2]];
   return {
     ...state,
     position,
     velocity,
-    acceleration: [solved.acceleration[0], nextGrounded ? 0 : -tuning.gravity, solved.acceleration[2]],
+    acceleration: [
+      solved.acceleration[0],
+      (velocity[1] - state.velocity[1]) / dt,
+      solved.acceleration[2],
+    ],
     desired_velocity: desired.velocity,
     desired_move_direction: desired.direction,
     current_speed: Math.hypot(Math.hypot(velocity[0], velocity[2]), velocity[1]),
@@ -329,6 +350,17 @@ export function predictMovementStep(state, input, tuning, dt) {
     aim_pitch: input.view_pitch,
     movement_mode: nextGrounded ? "grounded" : "airborne",
     grounded: nextGrounded,
+    floor_normal: collision?.floor_normal ?? state.floor_normal ?? [0, 1, 0],
+    floor_distance: collision?.floor_distance ?? state.floor_distance ?? null,
+    walkable_floor: collision?.walkable_floor ?? state.walkable_floor ?? true,
+    ground_contact_confirmed: collision?.ground_contact_confirmed ??
+      state.ground_contact_confirmed ?? nextGrounded,
+    ground_contact_point: collision?.ground_contact_point ?? state.ground_contact_point ?? null,
+    ground_entity: collision?.ground_entity ?? state.ground_entity ?? null,
+    ground_sample_count: collision?.ground_sample_count ?? state.ground_sample_count ?? 0,
+    slope_angle: collision?.slope_angle ?? state.slope_angle ?? 0,
+    blocked_move_ticks: collision?.blocked_move_ticks ?? state.blocked_move_ticks ?? 0,
+    step_up: Boolean(collision?.step_up),
     actual_gait: deriveActualGait(Math.hypot(solved.velocity[0], solved.velocity[2]), tuning),
     requested_gait: desired.requestedGait,
     rotation_mode: input.rotation_mode,

@@ -140,12 +140,21 @@ def test_websocket_handshake_commands_snapshot_and_metrics(monkeypatch) -> None:
                 assert motion_asset.status_code == 200
                 assert "javascript" in motion_asset.headers["content-type"]
                 assert "solveHorizontalVelocity" in motion_asset.text
+                collision_asset = await client.get(
+                    f"{http_url}/web/motion/arena-collision.json"
+                )
+                assert collision_asset.status_code == 200
+
+            async with websockets.connect(f"ws://127.0.0.1:{port}/ws") as obsolete_client:
+                await obsolete_client.send(json.dumps({"type": "hello", "protocol_version": 3}))
+                unsupported = json.loads(await asyncio.wait_for(obsolete_client.recv(), 2.0))
+                assert unsupported["code"] == "UNSUPPORTED_PROTOCOL"
 
             async with websockets.connect(f"ws://127.0.0.1:{port}/ws") as websocket:
-                await websocket.send(json.dumps({"type": "hello", "protocol_version": 3}))
+                await websocket.send(json.dumps({"type": "hello", "protocol_version": 4}))
                 welcome = json.loads(await asyncio.wait_for(websocket.recv(), 2.0))
                 assert welcome["type"] == "welcome"
-                assert welcome["protocol_version"] == 3
+                assert welcome["protocol_version"] == 4
                 assert welcome["tick_rate"] == settings.tick_rate
                 assert welcome["snapshot_interval_ticks"] == settings.snapshot_interval_ticks
                 assert welcome["movement_tuning"] == {
@@ -193,7 +202,19 @@ def test_websocket_handshake_commands_snapshot_and_metrics(monkeypatch) -> None:
                     "ground_grace_distance": settings.ground_grace_distance,
                     "ground_grace_ticks": settings.ground_grace_ticks,
                     "character_step_height": settings.character_step_height,
+                    "character_radius": settings.character_radius,
+                    "character_cylinder_height": settings.character_cylinder_height,
                 }
+                assert welcome["collision_world"]["version"] == 1
+                assert welcome["collision_world"]["planes"][0]["name"] == "arena-floor"
+                assert any(
+                    box["name"] == "cover-center" for box in welcome["collision_world"]["boxes"]
+                )
+                assert any(
+                    box["name"] == "upper-platform-step-1"
+                    for box in welcome["collision_world"]["boxes"]
+                )
+                assert welcome["collision_world"]["ramps"][0]["name"] == "walkable-ramp"
 
                 await websocket.send(json.dumps({"type": "join_game", "player_name": "  Pilot  "}))
                 joined = json.loads(await asyncio.wait_for(websocket.recv(), 2.0))

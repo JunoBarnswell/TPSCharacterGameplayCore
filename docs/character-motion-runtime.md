@@ -2,10 +2,12 @@
 
 ## Scope and ownership
 
-Python remains authoritative for collision, movement state, health, and life state. Browser code
-predicts the same unconstrained movement equations, then restores the authoritative state and replays
-unacknowledged inputs. Collision correction is smoothed only in the visual transform. Remote
-characters are rendered from a time-delayed snapshot buffer.
+Python remains authoritative for collision, movement state, health, and life state. Browser code runs
+the shared movement equations against a lightweight replica of the static arena collision profile,
+then restores authoritative state and replays unacknowledged inputs. Panda3D Bullet remains the final
+authority; the browser AABB/plane/ramp solver is a prediction approximation. Collision correction is
+smoothed only in the visual transform. Remote characters are rendered from a time-delayed snapshot
+buffer.
 
 The fixed simulation rate, replication rate, and browser render rate are independent. The default
 server tick remains 60 Hz; the default snapshot interval becomes three ticks (20 Hz). The browser
@@ -16,9 +18,9 @@ uses `requestAnimationFrame` and can render at its display rate.
 `CharacterMovementState` owns velocity, acceleration, desired movement, floor sample, movement mode,
 gait, facing/view rotations, rotation mode, and locomotion phase. `Character` separately owns
 `ActionLayer` and `LifeState`. A hit reaction therefore overlays locomotion instead of replacing it.
-The protocol is version 3 and removes the old single `state`, input `yaw`, and `sprint` boolean fields
-without legacy aliases. Input requests `walk`, `run`, or `sprint`; the server independently derives
-actual gait from solved horizontal speed.
+The protocol is version 4. It removes the old single `state`, input `yaw`, and `sprint` boolean fields
+without legacy aliases, and rejects protocol versions 1–3. Input requests `walk`, `run`, or `sprint`;
+the server independently derives actual gait from solved horizontal speed.
 
 ## Simulation order
 
@@ -51,7 +53,7 @@ configured short grace window; grace never validates a jump. The lab arena inclu
 0.3 m stair run. Step-up is attempted only after a grounded move was clipped; the solver validates
 support height and walkable normal before advancing onto it. Step-down uses nearby floor snap. These
 are lab collision fixtures, not map-authoring facilities. Bullet remains authoritative; browser
-collision parity is not implemented yet.
+collision is a prediction replica rather than a Bullet-equivalent solver.
 
 ## Network motion
 
@@ -62,9 +64,20 @@ inputs. Reconciliation offset is applied to a separate visual position and decay
 snap threshold for teleports or large errors. Remote snapshots retain tick, position, velocity, and
 rotation; render time is delayed and cubic Hermite interpolation uses endpoint velocities.
 
-The JSON wire model is strict. Protocol version 3 carries `view_yaw`, `view_pitch`, `rotation_mode`, and
+The JSON wire model is strict. Protocol version 4 carries `view_yaw`, `view_pitch`, `rotation_mode`, and
 `requested_gait`; snapshots report `actual_gait` separately. The JSON tuning contains the solver curves.
-on input; snapshots carry the independent movement channels, floor sample, aim offset, and ACK.
+Inputs carry intent only; snapshots carry independent movement channels, floor sample, aim offset,
+and input ACK.
+Welcome also carries the versioned static collision profile and capsule dimensions. Python builds its
+Bullet arena from the same packaged `web/motion/arena-collision.json` profile; per-server arena extents
+are applied before the expanded profile is sent. Snapshots include the blocked-move count needed to
+replay step-up decisions.
+
+Browser collision prediction sweeps the character center against radius-expanded static AABBs, slides
+along the first contact, uses sampled plane/box/ramp support for ground resolution, and performs a
+bounded step-up only after a previous tick was collision-limited. The collision replica does not
+reproduce all Bullet capsule/ghost-sweep edge behavior. Golden parity tests cover unconstrained solver
+equations; Bullet collision remains covered by separate authoritative-scene tests.
 
 ## Browser animation runtime
 
@@ -80,6 +93,9 @@ trajectory samples, and bounded motion history. It produces semantic blend data 
   actual gait, and Python/JS movement golden vectors are implemented.
 - Phase B: five-point ground probes, configured slope limits, ground contact/grace, walkable slope
   projection, blocked-move step-up, and step-down snapping are implemented and tested against Bullet.
+- Phase C: owner prediction history stores solved movement/floor/collision channels, ACK reconciliation
+  restores and replays pending inputs through a capsule-radius collision replica, and correction
+  position/rotation/velocity errors plus large-correction counts are exposed in the lab.
 - P1.0: Start/Stop/Pivot/Turn in Place, rotation modes, view/character/aim separation.
 - P1.1: shared movement equations, history/ACK replay, visual correction smoothing, remote
   interpolation, and adjustable latency/jitter/loss in the lab.

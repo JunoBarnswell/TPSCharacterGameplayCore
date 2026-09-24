@@ -1,10 +1,18 @@
-import { predictMovementStep } from "./movement-solver.mjs";
+import { angleDelta, predictMovementStep } from "./movement-solver.mjs";
 
 export class PredictionHistory {
-  constructor(limit = 256) {
+  constructor(limit = 256, largeCorrectionThreshold = 0.5) {
     this.limit = limit;
+    this.largeCorrectionThreshold = largeCorrectionThreshold;
     this.state = null;
     this.inputs = [];
+    this.metrics = {
+      position_error: 0,
+      rotation_error: 0,
+      velocity_error: 0,
+      reconciliation_count: 0,
+      large_correction_count: 0,
+    };
   }
 
   reset(authoritative) {
@@ -14,21 +22,42 @@ export class PredictionHistory {
       velocity: [...authoritative.velocity],
     };
     this.inputs = [];
+    this.metrics = {
+      position_error: 0,
+      rotation_error: 0,
+      velocity_error: 0,
+      reconciliation_count: 0,
+      large_correction_count: 0,
+    };
   }
 
-  predict(input, tuning, dt) {
+  predict(input, tuning, dt, collisionWorld = null) {
     if (!this.state) return null;
-    this.state = predictMovementStep(this.state, input, tuning, dt);
+    this.state = predictMovementStep(this.state, input, tuning, dt, collisionWorld);
     this.inputs.push({ input: { ...input }, state: structuredClone(this.state), sentAt: input.sentAt });
     if (this.inputs.length > this.limit) this.inputs.shift();
     return this.state;
   }
 
-  reconcile(authoritative, ack, tuning, dt) {
+  reconcile(authoritative, ack, tuning, dt, collisionWorld = null) {
     if (!this.state || !authoritative) {
       this.reset(authoritative);
       return this.state;
     }
+    const positionDifference = this.state.position.map(
+      (value, axis) => value - authoritative.position[axis],
+    );
+    const velocityDifference = this.state.velocity.map(
+      (value, axis) => value - authoritative.velocity[axis],
+    );
+    const positionError = Math.hypot(...positionDifference);
+    this.metrics.position_error = positionError;
+    this.metrics.rotation_error = Math.abs(
+      angleDelta(this.state.character_yaw, authoritative.character_yaw),
+    );
+    this.metrics.velocity_error = Math.hypot(...velocityDifference);
+    this.metrics.reconciliation_count++;
+    if (positionError > this.largeCorrectionThreshold) this.metrics.large_correction_count++;
     this.inputs = this.inputs.filter(({ input }) => input.sequence > ack);
     this.state = {
       ...authoritative,
@@ -36,7 +65,7 @@ export class PredictionHistory {
       velocity: [...authoritative.velocity],
     };
     for (const entry of this.inputs) {
-      this.state = predictMovementStep(this.state, entry.input, tuning, dt);
+      this.state = predictMovementStep(this.state, entry.input, tuning, dt, collisionWorld);
       entry.state = structuredClone(this.state);
     }
     return this.state;

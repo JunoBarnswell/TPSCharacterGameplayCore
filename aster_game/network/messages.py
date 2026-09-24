@@ -100,15 +100,44 @@ class MovementTuning(WireModel):
     ground_grace_distance: float = Field(ge=0.0)
     ground_grace_ticks: int = Field(ge=0)
     character_step_height: float = Field(ge=0.0)
+    character_radius: float = Field(gt=0.0)
+    character_cylinder_height: float = Field(gt=0.0)
+
+
+class CollisionPlane(WireModel):
+    name: str
+    normal: tuple[float, float, float]
+    constant: float
+
+
+class CollisionBox(WireModel):
+    name: str
+    center: tuple[float, float, float]
+    half_extents: tuple[float, float, float]
+
+
+class CollisionRamp(WireModel):
+    name: str
+    center: tuple[float, float, float]
+    half_extents: tuple[float, float, float]
+    pitch_degrees: float
+
+
+class CollisionWorldProfile(WireModel):
+    version: Literal[1]
+    planes: list[CollisionPlane]
+    boxes: list[CollisionBox]
+    ramps: list[CollisionRamp]
 
 
 class WelcomeMessage(WireModel):
     type: Literal["welcome"] = "welcome"
     session_id: str
-    protocol_version: int = 3
+    protocol_version: int = 4
     tick_rate: int
     snapshot_interval_ticks: int
     movement_tuning: MovementTuning
+    collision_world: CollisionWorldProfile
 
 
 class JoinedMessage(WireModel):
@@ -148,6 +177,7 @@ class PlayerSnapshot(WireModel):
     walkable_floor: bool
     ground_contact_confirmed: bool
     ground_sample_count: int
+    blocked_move_ticks: int = Field(ge=0)
     slope_angle: float
     ground_contact_point: tuple[float, float, float] | None
     ground_entity: str | None

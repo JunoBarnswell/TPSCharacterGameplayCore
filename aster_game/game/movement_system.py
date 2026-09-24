@@ -69,6 +69,8 @@ class MovementSystem:
                 character.physics.controller.setLinearMovement(Vec3(0.0, 0.0, 0.0), False)
                 character.physics.controller.setGravity(settings.gravity)
                 movement.movement_mode = MovementMode.DISABLED
+                movement.blocked_move_ticks = 0
+                movement.solver_horizontal_velocity = (0.0, 0.0)
                 continue
             if world.tick_id - movement.last_input_tick > input_timeout_ticks:
                 movement.move_x = 0.0
@@ -264,6 +266,7 @@ class PhysicsStepSystem:
                 movement.horizontal_speed = 0.0
                 movement.vertical_speed = 0.0
                 movement.actual_gait = Gait.IDLE
+                movement.blocked_move_ticks = 0
                 continue
             position = character.physics.node_path.getPos()
             new_position = (float(position.x), float(position.y), float(position.z))

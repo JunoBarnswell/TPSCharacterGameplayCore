@@ -27,6 +27,7 @@ import { evaluateAnimationGraph } from "../aster_game/web/animation/animation-gr
 import { evaluateBlendSpace } from "../aster_game/web/animation/blend-space.mjs";
 import { evaluateAimOffset } from "../aster_game/web/animation/aim-offset.mjs";
 import { orientationWarpAngle } from "../aster_game/web/animation/orientation-warp.mjs";
+import { CollisionWorld } from "../aster_game/web/motion/collision-world.mjs";
 
 const dt = 1 / 60;
 const goldenVectors = JSON.parse(readFileSync(
@@ -65,6 +66,17 @@ const tuning = {
   landing_heavy_velocity: 9,
   landing_recovery_seconds: 0.35,
 };
+const collisionTuning = {
+  ...tuning,
+  character_radius: 0.45,
+  character_cylinder_height: 0.9,
+  character_step_height: 0.35,
+  ground_probe_radius: 0.06,
+  ground_probe_depth: 0.4,
+  ground_probe_start_offset: 0.12,
+  ground_snap_distance: 0.35,
+  max_walkable_slope: 50,
+};
 
 function idleState() {
   return {
@@ -77,6 +89,10 @@ function idleState() {
     vertical_speed: 0,
     grounded: true,
     walkable_floor: true,
+    ground_contact_confirmed: true,
+    ground_contact_point: [0, 0, 0],
+    floor_normal: [0, 1, 0],
+    floor_distance: 0,
     movement_mode: "grounded",
     actual_gait: "idle",
     requested_gait: "run",
@@ -92,6 +108,7 @@ function idleState() {
     action_layer: "none",
     life_state: "alive",
     jump_held: false,
+    blocked_move_ticks: 0,
   };
 }
 
@@ -288,13 +305,17 @@ test("owner prediction restores an ACK and replays only remaining input history"
   const commands = [input(1), input(2), input(3)];
   const expected = commands.reduce((state, command) => predictMovementStep(state, command, tuning, dt), base);
   const serverStateAtAck = predictMovementStep(base, commands[0], tuning, dt);
-  const history = new PredictionHistory();
+  const history = new PredictionHistory(256, 0.001);
   history.reset(base);
   for (const command of commands) history.predict(command, tuning, dt);
   const corrected = history.reconcile(serverStateAtAck, 1, tuning, dt);
   assert.deepEqual(corrected.position, expected.position);
   assert.deepEqual(corrected.velocity, expected.velocity);
   assert.deepEqual(history.inputs.map(({ input: pending }) => pending.sequence), [2, 3]);
+  assert.equal(history.metrics.reconciliation_count, 1);
+  assert.ok(history.metrics.position_error > 0);
+  assert.ok(history.metrics.velocity_error > 0);
+  assert.equal(history.metrics.large_correction_count, 1, JSON.stringify(history.metrics));
 });
 
 test("visual correction eases small errors and snaps large corrections", () => {
@@ -316,6 +337,136 @@ test("remote snapshots interpolate with velocity and cap extrapolation", () => {
   assert.deepEqual(buffer.sample(100, 60, 0.1).position, [8, 0, 0]);
   buffer.push({ tick: 3, position: [30, 0, 0], velocity: [0, 0, 0], character_yaw: 0 });
   assert.equal(buffer.samples.length, 1);
+});
+
+test("collision prediction stops at cover and preserves tangential wall motion", () => {
+  const collisionWorld = new CollisionWorld({
+    version: 1,
+    planes: [{ name: "floor", normal: [0, 1, 0], constant: 0 }],
+    boxes: [{ name: "cover", center: [0, 0.9, 0], half_extents: [1.1, 0.9, 1.1] }],
+    ramps: [],
+  });
+  let state = {
+    ...idleState(),
+    position: [0, 0.9, -3],
+    ground_contact_point: [0, 0, -3],
+    simulation_tick: 1,
+  };
+  for (let sequence = 1; sequence <= 120; sequence++) {
+    state = predictMovementStep(
+      state,
+      input(sequence),
+      collisionTuning,
+      dt,
+      collisionWorld,
+    );
+  }
+  assert.ok(state.position[2] <= -1.54);
+  assert.equal(state.grounded, true);
+
+  const history = new PredictionHistory(256, 0.5);
+  const baseState = {
+    ...idleState(),
+    position: [0, 0.9, -3],
+    ground_contact_point: [0, 0, -3],
+    simulation_tick: 1,
+  };
+  history.reset(baseState);
+  for (let sequence = 1; sequence <= 120; sequence++) {
+    history.predict(input(sequence), collisionTuning, dt, collisionWorld);
+  }
+  const acknowledged = predictMovementStep(
+    baseState,
+    input(1),
+    collisionTuning,
+    dt,
+    collisionWorld,
+  );
+  assert.ok(
+    history.state.position[2] > acknowledged.position[2],
+    JSON.stringify({ predicted: history.state.position, acknowledged: acknowledged.position }),
+  );
+  const replayed = history.reconcile(acknowledged, 1, collisionTuning, dt, collisionWorld);
+  assertVector(replayed.position, state.position, "collision replay position");
+  assertVector(replayed.velocity, state.velocity, "collision replay velocity");
+  assert.equal(history.metrics.large_correction_count, 1, JSON.stringify(history.metrics));
+  assert.ok(history.metrics.position_error > 0.5);
+
+  const alongWall = collisionWorld.moveCharacter(
+    { ...state, position: [1.56, 0.9, -3], blocked_move_ticks: 0 },
+    [1.56, 0.9, -2.9],
+    [0, 0, 6],
+    collisionTuning,
+    dt,
+  );
+  assert.ok(alongWall.position[2] > -3);
+});
+
+test("collision prediction steps up a low box and lands after falling", () => {
+  const stepWorld = new CollisionWorld({
+    version: 1,
+    planes: [{ name: "floor", normal: [0, 1, 0], constant: 0 }],
+    boxes: [{ name: "step", center: [0, 0.15, 0.2], half_extents: [1, 0.15, 0.5] }],
+    ramps: [],
+  });
+  let state = {
+    ...idleState(),
+    position: [0, 0.9, -1],
+    ground_contact_point: [0, 0, -1],
+    simulation_tick: 1,
+  };
+  let stepped = false;
+  for (let sequence = 1; sequence <= 60; sequence++) {
+    state = predictMovementStep(
+      state,
+      input(sequence),
+      collisionTuning,
+      dt,
+      stepWorld,
+    );
+    if (state.step_up) {
+      stepped = true;
+      break;
+    }
+  }
+  assert.equal(stepped, true);
+  assert.equal(state.ground_entity, "step");
+  assert.ok(state.position[1] >= 1.2);
+
+  const floorWorld = new CollisionWorld({
+    version: 1,
+    planes: [{ name: "floor", normal: [0, 1, 0], constant: 0 }],
+    boxes: [],
+    ramps: [],
+  });
+  state = {
+    ...idleState(),
+    position: [0, 3, 0],
+    velocity: [0, -2, 0],
+    vertical_speed: -2,
+    grounded: false,
+    ground_contact_confirmed: false,
+    movement_mode: "airborne",
+    locomotion_phase: "falling",
+    simulation_tick: 1,
+  };
+  let landed = false;
+  for (let sequence = 1; sequence <= 120; sequence++) {
+    state = predictMovementStep(
+      state,
+      input(sequence, 0),
+      collisionTuning,
+      dt,
+      floorWorld,
+    );
+    if (state.grounded) {
+      landed = true;
+      break;
+    }
+  }
+  assert.equal(landed, true);
+  assert.ok(Math.abs(state.position[1] - 0.9) < 1e-6);
+  assert.ok(["soft_land", "normal_land", "heavy_land"].includes(state.locomotion_phase));
 });
 
 test("MotionFrame, trajectory and bounded motion history carry animation inputs", () => {

@@ -281,6 +281,7 @@ class GameWorld:
                 "walkable_floor": character.movement.walkable_floor,
                 "ground_contact_confirmed": character.movement.ground_contact_confirmed,
                 "ground_sample_count": character.movement.ground_sample_count,
+                "blocked_move_ticks": character.movement.blocked_move_ticks,
                 "slope_angle": character.movement.slope_angle,
                 "ground_contact_point": character.movement.ground_contact_point,
                 "ground_entity": character.movement.ground_entity,

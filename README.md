@@ -2,9 +2,9 @@
 
 Authoritative Python gameplay server and browser Character Motion Lab for a Web TPS. Python owns
 movement, physics, combat, health, death, respawn, and snapshots. Browser motion modules implement
-matching owner prediction, input replay, visual correction smoothing, remote interpolation, and
-animation blend semantics. The canvas lab is not a production 3D client and does not play skeletal
-animations.
+collision-aware owner prediction, input replay, visual correction smoothing, remote interpolation,
+and animation blend semantics. The canvas lab is not a production 3D client and does not play
+skeletal animations.
 
 ## Requirements
 
@@ -30,13 +30,15 @@ node --test tests/test_web_motion.mjs
 ```
 
 Health and in-memory server metrics are available at `/healthz` and `/metrics`. WebSocket clients
-connect to `/ws`, send `hello` with protocol version `3`, then `join_game`. Omitting `room_id` joins
+connect to `/ws`, send `hello` with protocol version `4`, then `join_game`. Omitting `room_id` joins
 an available room or creates one. Explicit room IDs only join an existing room.
 
 Open `http://127.0.0.1:8000/` for the Character Motion Lab. It predicts using the same acceleration,
 braking, air steering, and rotation equations, restores authoritative snapshots, replays unacknowledged
-input history, and smooths only the visual correction. Remote players render from a tick-buffered
-Hermite interpolation path. Simulation runs at 60 Hz by default; replication is independently
+input history, and resolves client-side capsule movement against the versioned arena collision profile
+sent during Welcome. Collision is a lightweight browser replica; Panda3D Bullet remains authoritative
+and contact details can differ. Owner correction is smoothed separately from simulation state. Remote
+players render from a tick-buffered Hermite interpolation path. Simulation runs at 60 Hz by default; replication is independently
 configurable and defaults to 20 Hz (`snapshot_interval_ticks: 3`); browser rendering uses
 `requestAnimationFrame`. The page reports movement channels, floor sample, aim/facing, ACK/correction,
 simulation/snapshot/render rates, ping/jitter, and pending input count. Use the Network Simulation
@@ -48,10 +50,10 @@ The protocol is JSON. Client messages are `hello`, `join_game`, `input`, `attack
 `ping`. Server messages include `welcome`, `joined`, `snapshot`, gameplay events, `pong`, and
 `error`. The detailed wire models live in `aster_game/network/messages.py`.
 
-Protocol v3 example client flow:
+Protocol v4 example client flow:
 
 ```json
-{"type":"hello","protocol_version":3}
+{"type":"hello","protocol_version":4}
 {"type":"join_game","player_name":"Player One"}
 {"type":"input","sequence":1,"client_tick":1,"move_x":0,"move_z":1,"jump":false,"requested_gait":"run","view_yaw":0,"view_pitch":0,"rotation_mode":"orient_to_movement"}
 {"type":"attack"}
@@ -62,9 +64,11 @@ is `walk`, `run`, or `sprint`; snapshots separately report requested and speed-d
 Movement tuning includes piecewise acceleration, braking, and turn-speed curves. `view_yaw` and
 `view_pitch` are degrees; movement axes are clamped to `[-1, 1]`, and sequences must increase.
 Repeated movement input is coalesced per tick while jump press edges are retained. The server
-acknowledges the latest applied sequence in each player's snapshot. Protocol v3 intentionally removes
-the old `sprint` boolean, client-authored `yaw`, and mutually exclusive character `state` fields; no v2
-or v1 aliases are kept. Messages larger than 16 KiB are rejected by the WebSocket server.
+acknowledges the latest applied sequence in each player's snapshot. Protocol v4 intentionally removes
+the old `sprint` boolean, client-authored `yaw`, and mutually exclusive character `state` fields; no v1,
+v2, or v3 aliases are kept. Welcome v4 includes the collision profile and capsule geometry required
+for local collision prediction; snapshots include blocked-move state for input replay. Messages larger
+than 16 KiB are rejected by the WebSocket server.
 
 Gameplay events include `motion_state_changed`, `jump_started`, `rising`, `apex_reached`,
 `fall_started`, `fall_impact`, `landing_started`, `landed`, `attack_fired`, `attack_rejected`, `hit`,

@@ -1,4 +1,6 @@
 from dataclasses import dataclass
+from importlib.resources import files
+from json import loads
 from math import cos, hypot, radians
 
 from panda3d.bullet import (
@@ -48,7 +50,74 @@ class PhysicsWorld:
         self.root = NodePath("world-root")
         self._projectile_shape = BulletSphereShape(settings.projectile_radius)
         self._ground_probe_shape = BulletSphereShape(settings.ground_probe_radius)
+        self.collision_profile = self.build_collision_profile(settings)
         self._build_arena()
+
+    @staticmethod
+    def build_collision_profile(settings: Settings) -> dict[str, object]:
+        resource = files("aster_game").joinpath("web/motion/arena-collision.json")
+        profile = loads(resource.read_text(encoding="utf-8"))
+        if profile["version"] != 1:
+            raise RuntimeError(f"unsupported arena collision profile: {profile['version']}")
+        extent = settings.arena_half_extent
+        wall_height = float(profile["wall_height"])
+        wall_thickness = float(profile["wall_thickness"])
+        boxes = [
+            {
+                "name": "arena-wall-north",
+                "center": [0.0, wall_height / 2.0, extent],
+                "half_extents": [extent, wall_height / 2.0, wall_thickness],
+            },
+            {
+                "name": "arena-wall-south",
+                "center": [0.0, wall_height / 2.0, -extent],
+                "half_extents": [extent, wall_height / 2.0, wall_thickness],
+            },
+            {
+                "name": "arena-wall-east",
+                "center": [extent, wall_height / 2.0, 0.0],
+                "half_extents": [wall_thickness, wall_height / 2.0, extent],
+            },
+            {
+                "name": "arena-wall-west",
+                "center": [-extent, wall_height / 2.0, 0.0],
+                "half_extents": [wall_thickness, wall_height / 2.0, extent],
+            },
+            *profile["boxes"],
+        ]
+        staircase = profile["staircase"]
+        rise = float(staircase["step_rise"])
+        for index in range(int(staircase["step_count"])):
+            top = rise * (index + 1)
+            boxes.append(
+                {
+                    "name": f"upper-platform-step-{index + 1}",
+                    "center": [
+                        0.0,
+                        top - rise / 2.0,
+                        float(staircase["step_start_z"])
+                        + index * float(staircase["step_spacing"]),
+                    ],
+                    "half_extents": [
+                        float(staircase["step_half_width"]),
+                        rise / 2.0,
+                        float(staircase["step_half_depth"]),
+                    ],
+                }
+            )
+        boxes.append(
+            {
+                "name": "upper-platform",
+                "center": staircase["platform_center"],
+                "half_extents": staircase["platform_half_extents"],
+            }
+        )
+        return {
+            "version": 1,
+            "planes": [{"name": "arena-floor", "normal": [0.0, 1.0, 0.0], "constant": 0.0}],
+            "boxes": boxes,
+            "ramps": profile["ramps"],
+        }
 
     def _add_static_box(
         self,
@@ -61,65 +130,33 @@ class PhysicsWorld:
         path = self.root.attachNewNode(body)
         path.setPos(*center)
         self.world.attach(body)
+        self._static_bodies.append(body)
+        self._static_paths.append(path)
 
     def _build_arena(self) -> None:
-        floor = BulletRigidBodyNode("arena-floor")
-        floor.addShape(BulletPlaneShape(Vec3(0.0, 1.0, 0.0), 0.0))
-        floor_path = self.root.attachNewNode(floor)
-        self.world.attach(floor)
-
-        extent = self.settings.arena_half_extent
-        wall_height = 3.0
-        wall_thickness = 0.75
-        self._add_static_box(
-            "arena-wall-north",
-            (0.0, wall_height / 2, extent),
-            (extent, wall_height / 2, wall_thickness),
-        )
-        self._add_static_box(
-            "arena-wall-south",
-            (0.0, wall_height / 2, -extent),
-            (extent, wall_height / 2, wall_thickness),
-        )
-        self._add_static_box(
-            "arena-wall-east",
-            (extent, wall_height / 2, 0.0),
-            (wall_thickness, wall_height / 2, extent),
-        )
-        self._add_static_box(
-            "arena-wall-west",
-            (-extent, wall_height / 2, 0.0),
-            (wall_thickness, wall_height / 2, extent),
-        )
-        self._add_static_box("cover-center", (0.0, 0.9, 0.0), (1.1, 0.9, 1.1))
-        ramp = BulletRigidBodyNode("walkable-ramp")
-        ramp.addShape(BulletBoxShape(Vec3(2.0, 0.15, 2.0)))
-        ramp_path = self.root.attachNewNode(ramp)
-        ramp_path.setPos(8.0, 0.95, -4.0)
-        ramp_path.setP(-20.0)
-        self.world.attach(ramp)
-        step_rise = 0.3
-        step_spacing = 0.5
-        step_start_z = 5.0
-        step_count = 24
-        for index in range(step_count):
-            top = step_rise * (index + 1)
-            self._add_static_box(
-                f"upper-platform-step-{index + 1}",
-                (0.0, top - step_rise / 2.0, step_start_z + index * step_spacing),
-                (1.75, step_rise / 2.0, 0.4),
-            )
-        platform_top = step_rise * step_count
-        self._add_static_box(
-            "upper-platform",
-            (0.0, platform_top - 0.2, 18.0),
-            (4.0, 0.2, 2.5),
-        )
+        self._static_bodies: list[BulletRigidBodyNode] = []
+        self._static_paths: list[NodePath] = []
+        for plane in self.collision_profile["planes"]:
+            floor = BulletRigidBodyNode(plane["name"])
+            floor.addShape(BulletPlaneShape(Vec3(*plane["normal"]), plane["constant"]))
+            floor_path = self.root.attachNewNode(floor)
+            self.world.attach(floor)
+            self._static_bodies.append(floor)
+            self._static_paths.append(floor_path)
+        for box in self.collision_profile["boxes"]:
+            center = tuple(box["center"])
+            half_extents = tuple(box["half_extents"])
+            self._add_static_box(box["name"], center, half_extents)
+        for ramp in self.collision_profile["ramps"]:
+            body = BulletRigidBodyNode(ramp["name"])
+            body.addShape(BulletBoxShape(Vec3(*ramp["half_extents"])))
+            path = self.root.attachNewNode(body)
+            path.setPos(*ramp["center"])
+            path.setP(ramp["pitch_degrees"])
+            self.world.attach(body)
+            self._static_bodies.append(body)
+            self._static_paths.append(path)
         # Keep strong references to Panda nodes while the Bullet world is alive.
-        self._floor_node = floor
-        self._floor_path = floor_path
-        self._ramp_node = ramp
-        self._ramp_path = ramp_path
 
     def create_character(
         self, entity_id: int, position: tuple[float, float, float]

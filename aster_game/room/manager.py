@@ -3,6 +3,7 @@ import logging
 from uuid import uuid4
 
 from aster_game.app.config import Settings
+from aster_game.game.physics import PhysicsWorld
 from aster_game.infrastructure.metrics import RuntimeMetrics
 from aster_game.network.session import WebSocketSession
 from aster_game.room.room import GameRoom
@@ -30,6 +31,7 @@ class RoomManager:
     def __init__(self, settings: Settings, metrics: RuntimeMetrics) -> None:
         self.settings = settings
         self.metrics = metrics
+        self.collision_profile = PhysicsWorld.build_collision_profile(settings)
         self.rooms: dict[str, GameRoom] = {}
         self._lock = asyncio.Lock()
         self._closed = False
