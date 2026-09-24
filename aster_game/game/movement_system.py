@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from math import acos, ceil, cos, degrees, hypot, radians
+from time import perf_counter
 from typing import TYPE_CHECKING
 
 from panda3d.core import Vec3
@@ -72,6 +73,7 @@ class CommandSystem:
 
 class MovementSystem:
     def update(self, world: GameWorld, dt: float) -> None:
+        started = perf_counter()
         settings = world.settings
         input_timeout_ticks = settings.tick_rate // 2
         jump_cooldown_ticks = ceil(settings.jump_cooldown_seconds * settings.tick_rate)
@@ -274,10 +276,12 @@ class MovementSystem:
                         reason="JUMP_INVALID",
                     )
                 movement.jump_requested = False
+        world.metrics.record_phase("movement_solver", (perf_counter() - started) * 1000.0)
 
 
 class PhysicsStepSystem:
     def update(self, world: GameWorld, dt: float) -> None:
+        started = perf_counter()
         world.physics.step(dt)
         for character in world.characters.values():
             movement = character.movement
@@ -325,6 +329,7 @@ class PhysicsStepSystem:
                 movement.acceleration[2],
             )
             character.transform.position = new_position
+        world.metrics.record_phase("physics", (perf_counter() - started) * 1000.0)
 
 
 class AirLifecycleSystem:

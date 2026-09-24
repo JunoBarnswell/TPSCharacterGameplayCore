@@ -133,7 +133,7 @@ class CollisionWorldProfile(WireModel):
 class WelcomeMessage(WireModel):
     type: Literal["welcome"] = "welcome"
     session_id: str
-    protocol_version: int = 5
+    protocol_version: int = 6
     tick_rate: int
     snapshot_interval_ticks: int
     movement_tuning: MovementTuning
@@ -159,7 +159,7 @@ class PongMessage(WireModel):
     nonce: int | str | None = None
 
 
-class PlayerSnapshot(WireModel):
+class RemotePlayerSnapshot(WireModel):
     entity_id: int
     player_id: str
     player_name: str
@@ -168,22 +168,14 @@ class PlayerSnapshot(WireModel):
     acceleration: tuple[float, float, float]
     desired_velocity: tuple[float, float, float]
     desired_move_direction: tuple[float, float, float]
-    current_speed: float
     horizontal_speed: float
     vertical_speed: float
     grounded: bool
     floor_normal: tuple[float, float, float]
     floor_distance: float | None
     walkable_floor: bool
-    ground_contact_confirmed: bool
-    ground_sample_count: int
-    blocked_move_ticks: int = Field(ge=0)
-    slope_angle: float
-    ground_contact_point: tuple[float, float, float] | None
-    ground_entity: str | None
     movement_mode: str
     actual_gait: str
-    requested_gait: str
     character_yaw: float
     desired_facing_yaw: float
     angular_velocity: float
@@ -194,25 +186,38 @@ class PlayerSnapshot(WireModel):
     aim_pitch: float
     rotation_mode: str
     locomotion_phase: str
-    phase_start_tick: int
-    phase_duration_ticks: int = Field(ge=0)
     phase_progress: float = Field(ge=0.0, le=1.0)
-    phase_until_tick: int
-    landing_recovery_until_tick: int
     turn_angle: float
     turn_direction: Literal["none", "left", "right"]
     remaining_turn_angle: float
     turn_progress: float = Field(ge=0.0, le=1.0)
     landing_impact_velocity: float
-    jump_held: bool
     action_layer: str
     life_state: str
     hit_direction: tuple[float, float, float] | None
     hit_region: str | None
     hit_strength: float
-    hit_source_position: tuple[float, float, float] | None
     health: float
     max_health: float
+
+
+class OwnerPlayerSnapshot(RemotePlayerSnapshot):
+    """Owner-only fields used for prediction, acknowledgements, and movement debugging."""
+
+    current_speed: float
+    ground_contact_confirmed: bool
+    ground_sample_count: int
+    blocked_move_ticks: int = Field(ge=0)
+    slope_angle: float
+    ground_contact_point: tuple[float, float, float] | None
+    ground_entity: str | None
+    requested_gait: str
+    phase_start_tick: int
+    phase_duration_ticks: int = Field(ge=0)
+    phase_until_tick: int
+    landing_recovery_until_tick: int
+    jump_held: bool
+    hit_source_position: tuple[float, float, float] | None
     last_processed_input: int
     last_client_tick: int
     jump_available_tick: int
@@ -227,5 +232,6 @@ class ProjectileSnapshot(WireModel):
 class SnapshotMessage(WireModel):
     type: Literal["snapshot"] = "snapshot"
     tick: int
-    players: list[PlayerSnapshot]
+    owner: OwnerPlayerSnapshot
+    players: list[RemotePlayerSnapshot]
     projectiles: list[ProjectileSnapshot]

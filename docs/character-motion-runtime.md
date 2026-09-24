@@ -18,8 +18,9 @@ uses `requestAnimationFrame` and can render at its display rate.
 `CharacterMovementState` owns velocity, acceleration, desired movement, floor sample, movement mode,
 gait, facing/view rotations, rotation mode, and locomotion phase. `Character` separately owns
 `ActionLayer` and `LifeState`. A hit reaction therefore overlays locomotion instead of replacing it.
-The protocol is version 5. It removes the old single `state`, input `yaw`, and `sprint` boolean fields
-without legacy aliases, and rejects protocol versions 1–4. Snapshots also carry phase progress and
+The protocol is version 6. It removes the old single `state`, input `yaw`, and `sprint` boolean fields
+without legacy aliases, and rejects protocol versions 1–5. Snapshots separate the owner prediction/debug
+state from remote animation/interpolation state. Snapshots also carry phase progress and
 turn-in-place direction/progress. Input requests `walk`, `run`, or `sprint`;
 the server independently derives actual gait from solved horizontal speed.
 
@@ -65,7 +66,7 @@ inputs. Reconciliation offset is applied to a separate visual position and decay
 snap threshold for teleports or large errors. Remote snapshots retain tick, position, velocity, and
 rotation; render time is delayed and cubic Hermite interpolation uses endpoint velocities.
 
-The JSON wire model is strict. Protocol version 5 carries `view_yaw`, `view_pitch`, `rotation_mode`, and
+The JSON wire model is strict. Protocol version 6 carries `view_yaw`, `view_pitch`, `rotation_mode`, and
 `requested_gait`; snapshots report `actual_gait` separately. The JSON tuning contains the solver curves.
 Inputs carry intent only; snapshots carry independent movement channels, floor sample, aim offset,
 and input ACK.
@@ -106,8 +107,14 @@ authored character animation assets.
   multi-pose blending, world transforms, and transform-level pose inertialization.
 - Phase F: nine-sample additive aim-pose evaluation, bone-masked action layers, combined upper-body
   action plus additive reaction, and server-replicated turn/phase progress are implemented and tested.
-- Phase G planned: tested foot IK, pose-deforming orientation warp, root-motion/motion-warp transforms,
-  solver-rollout trajectories, pose features/history, pose search, and motion matching.
+- Phase G: bounded foot contact correction and world-space foot locks, distributed pose orientation
+  warp, local root-motion extraction/application, target-directed root-motion correction, movement-solver
+  trajectory rollout, critical-bone pose history/features, brute-force pose search, and motion matching
+  are implemented with synthetic-rig and collision-rollout tests. The Motion Lab exercises the runtime
+  against its explicitly synthetic seven-bone rig and candidate database.
 
-Real skeletal playback, renderer-backed foot probes, and asset-authored quality are not part of the
-2D Motion Lab even after the synthetic pose runtime is complete.
+The movement solver and the browser collision replica have different collision primitives from Bullet;
+golden parity covers the shared unconstrained movement equations while collision correction remains
+server-authoritative. The browser can now measure prediction, animation, search, and trajectory costs,
+but no representative production-server benchmark has been established. Real skeletal playback,
+renderer-backed probes, authored asset quality, and two-bone leg IK are not part of this 2D Motion Lab.

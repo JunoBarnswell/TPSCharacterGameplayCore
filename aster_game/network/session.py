@@ -16,32 +16,34 @@ class WebSocketSession:
         self.protocol_version: int | None = None
         self.last_received_input_sequence = -1
         self._outbound_capacity = outbound_capacity
-        self._outbound: deque[dict[str, Any]] = deque()
+        self._outbound: deque[tuple[dict[str, Any], str | None]] = deque()
         self._outbound_ready = asyncio.Event()
         self._close_request: tuple[int, str] | None = None
         self.closed = False
 
-    def enqueue(self, message: dict[str, Any]) -> bool:
+    def enqueue(self, message: dict[str, Any], *, serialized: str | None = None) -> bool:
         if self.closed or self._close_request is not None:
             return False
         is_snapshot = message.get("type") == "snapshot"
+        if serialized is not None and not is_snapshot:
+            raise ValueError("pre-serialized outbound payloads are reserved for snapshots")
         if len(self._outbound) >= self._outbound_capacity:
             if is_snapshot:
-                for index, queued in enumerate(self._outbound):
+                for index, (queued, _) in enumerate(self._outbound):
                     if queued.get("type") == "snapshot":
                         del self._outbound[index]
                         break
                 else:
                     return False
             else:
-                for index, queued in enumerate(self._outbound):
+                for index, (queued, _) in enumerate(self._outbound):
                     if queued.get("type") == "snapshot":
                         del self._outbound[index]
                         break
                 else:
                     self.request_close(1013, "outbound queue is full")
                     return False
-        self._outbound.append(message)
+        self._outbound.append((message, serialized))
         self._outbound_ready.set()
         return True
 
@@ -55,8 +57,11 @@ class WebSocketSession:
             while True:
                 await self._outbound_ready.wait()
                 while self._outbound:
-                    message = self._outbound.popleft()
-                    await self.websocket.send_json(message)
+                    message, serialized = self._outbound.popleft()
+                    if serialized is None:
+                        await self.websocket.send_json(message)
+                    else:
+                        await self.websocket.send_text(serialized)
                 self._outbound_ready.clear()
                 if self._close_request is not None:
                     code, reason = self._close_request

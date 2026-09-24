@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from math import cos, radians, sin
+from pathlib import Path
 
 import pytest
 
@@ -9,6 +11,7 @@ from aster_game.game.components import InputCommand
 from aster_game.game.events import DamageRequest, DamageType
 from aster_game.game.movement.solver import (
     derive_actual_gait,
+    desired_facing_yaw,
     desired_motion,
     landing_classification,
     project_velocity_onto_ground_plane,
@@ -22,6 +25,7 @@ from aster_game.game.movement.state import (
     LocomotionPhase,
     MovementMode,
     RequestedGait,
+    RotationMode,
 )
 from aster_game.game.movement_system import AirLifecycleSystem
 from aster_game.game.world import GameWorld
@@ -230,6 +234,99 @@ def test_rotation_solver_respects_rate_limit_and_shortest_arc() -> None:
     )
     assert 179.0 < yaw < 181.0 or -180.0 <= yaw < -179.0
     assert abs(yaw_rate) <= 360.0
+
+
+def test_shared_python_javascript_solver_vectors_stay_bounded_for_10_30_and_60_seconds() -> None:
+    fixtures = Path(__file__).parent / "fixtures"
+    scenario = json.loads((fixtures / "movement-drift-vectors.json").read_text())
+    tuning = json.loads((fixtures / "movement-golden-vectors.json").read_text())["tuning"]
+    durations = set(scenario["durations_seconds"])
+    velocity = (0.0, 0.0)
+    position = [0.0, 0.0]
+    acceleration = (0.0, 0.0)
+    character_yaw = 0.0
+    angular_velocity = 0.0
+    actual: dict[str, dict[str, object]] = {}
+    maximum_ticks = round(max(scenario["durations_seconds"]) / scenario["dt"])
+
+    for tick in range(1, maximum_ticks + 1):
+        segment_index = (tick - 1) // scenario["phase_ticks"] % len(scenario["segments"])
+        segment = scenario["segments"][segment_index]
+        desired, _ = desired_motion(
+            segment["move_x"],
+            segment["move_z"],
+            segment["requested_gait"],
+            segment["view_yaw"],
+            tuning["walk_speed"],
+            tuning["run_speed"],
+            tuning["sprint_speed"],
+        )
+        velocity, acceleration = solve_horizontal_velocity(
+            velocity,
+            (desired[0], desired[2]),
+            scenario["dt"],
+            grounded=True,
+            ground_acceleration=tuning["ground_acceleration"],
+            braking_deceleration=tuning["braking_deceleration"],
+            ground_friction=tuning["ground_friction"],
+            air_acceleration=tuning["air_acceleration"],
+            air_control=tuning["air_control"],
+            air_max_speed=tuning["air_max_speed"],
+            ground_directional_friction=tuning["ground_directional_friction"],
+            turning_deceleration=tuning["turning_deceleration"],
+            pivot_braking_multiplier=tuning["pivot_braking_multiplier"],
+            pivot_angle_threshold=tuning["pivot_angle_threshold"],
+            acceleration_curve=tuning[f"{segment['requested_gait']}_acceleration_curve"],
+            braking_curve=tuning["braking_curve"],
+            reference_speed=tuning["sprint_speed"],
+        )
+        position[0] += velocity[0] * scenario["dt"]
+        position[1] += velocity[1] * scenario["dt"]
+        facing = desired_facing_yaw(
+            RotationMode(segment["rotation_mode"]),
+            segment["view_yaw"],
+            segment["move_x"],
+            segment["move_z"],
+        )
+        desired_yaw = character_yaw if facing is None else facing
+        character_yaw, angular_velocity = solve_rotation(
+            character_yaw,
+            angular_velocity,
+            desired_yaw,
+            scenario["dt"],
+            max_speed=tuning["max_rotation_speed"],
+            acceleration=tuning["rotation_acceleration"],
+            deceleration=tuning["rotation_deceleration"],
+            turn_speed_curve=tuning["turn_speed_curve"],
+        )
+        seconds = tick * scenario["dt"]
+        if seconds not in durations:
+            continue
+        actual[str(int(seconds))] = {
+            "position": [*position],
+            "velocity": [*velocity],
+            "acceleration": [*acceleration],
+            "yaw": character_yaw,
+            "yaw_rate": angular_velocity,
+            "actual_gait": derive_actual_gait(
+                (velocity[0] ** 2 + velocity[1] ** 2) ** 0.5,
+                tuning["walk_speed"],
+                tuning["run_speed"],
+                tuning["sprint_speed"],
+            ).value,
+        }
+
+    assert set(actual) == {str(value) for value in durations}
+    for seconds in scenario["durations_seconds"]:
+        expected = scenario["expected"][str(seconds)]
+        observed = actual[str(seconds)]
+        for field in ("position", "velocity", "acceleration"):
+            assert observed[field] == pytest.approx(expected[field], abs=scenario["tolerance"])
+        assert observed["yaw"] == pytest.approx(expected["yaw"], abs=scenario["tolerance"])
+        assert observed["yaw_rate"] == pytest.approx(
+            expected["yaw_rate"], abs=scenario["tolerance"]
+        )
+        assert observed["actual_gait"] == expected["actual_gait"]
 
 
 def test_landing_tiers_have_distinct_motion_semantics() -> None:

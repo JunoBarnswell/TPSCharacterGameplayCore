@@ -7,7 +7,11 @@ from aster_game.app.config import Settings
 from aster_game.game.events import GameplayEvent
 from aster_game.game.world import GameWorld
 from aster_game.infrastructure.metrics import RuntimeMetrics
-from aster_game.network.messages import SnapshotMessage
+from aster_game.network.messages import (
+    OwnerPlayerSnapshot,
+    RemotePlayerSnapshot,
+    SnapshotMessage,
+)
 from aster_game.network.session import WebSocketSession
 
 logger = logging.getLogger(__name__)
@@ -66,6 +70,9 @@ class GameRoom:
             while not self._stopping:
                 started = perf_counter()
                 events = self.world.tick(interval)
+                self._dispatch_events(events)
+                if self.world.tick_id % self.settings.snapshot_interval_ticks == 0:
+                    self._dispatch_snapshot()
                 duration_ms = (perf_counter() - started) * 1000.0
                 self.metrics.record_tick(self.room_id, duration_ms)
                 if duration_ms >= interval * 1000.0:
@@ -78,9 +85,6 @@ class GameRoom:
                             "duration_ms": round(duration_ms, 3),
                         },
                     )
-                self._dispatch_events(events)
-                if self.world.tick_id % self.settings.snapshot_interval_ticks == 0:
-                    self._dispatch_snapshot()
 
                 deadline += interval
                 delay = deadline - loop.time()
@@ -151,12 +155,35 @@ class GameRoom:
         return fields
 
     def _dispatch_snapshot(self) -> None:
-        message = SnapshotMessage.model_validate(self.world.snapshot()).model_dump(mode="json")
-        serialized = json.dumps(message, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-        sends = 0
+        started = perf_counter()
+        world_snapshot = self.world.snapshot()
+        player_snapshots = {player["entity_id"]: player for player in world_snapshot["players"]}
+        remote_models = {
+            entity_id: RemotePlayerSnapshot.model_validate(
+                {name: player[name] for name in RemotePlayerSnapshot.model_fields}
+            )
+            for entity_id, player in player_snapshots.items()
+        }
+        payload_sizes: list[int] = []
         for session in tuple(self.sessions.values()):
-            sends += int(session.enqueue(message))
-        self.metrics.record_snapshot(len(serialized), sends)
+            if session.entity_id not in player_snapshots:
+                raise RuntimeError("room session does not own a character in its world snapshot")
+            owner = OwnerPlayerSnapshot.model_validate(player_snapshots[session.entity_id])
+            message = SnapshotMessage(
+                tick=world_snapshot["tick"],
+                owner=owner,
+                players=[
+                    remote
+                    for entity_id, remote in remote_models.items()
+                    if entity_id != session.entity_id
+                ],
+                projectiles=world_snapshot["projectiles"],
+            ).model_dump(mode="json")
+            serialized = json.dumps(message, separators=(",", ":"), ensure_ascii=False)
+            if session.enqueue(message, serialized=serialized):
+                payload_sizes.append(len(serialized.encode("utf-8")))
+        self.metrics.record_snapshot(payload_sizes)
+        self.metrics.record_phase("snapshot", (perf_counter() - started) * 1000.0)
 
     async def close(self) -> None:
         self._stopping = True

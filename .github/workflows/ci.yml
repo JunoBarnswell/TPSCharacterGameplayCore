@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: astral-sh/setup-uv@v5
+      - name: Install locked Python dependencies
+        run: uv sync --locked --python 3.13 --group dev
+      - name: Python tests
+        run: uv run --locked pytest -q
+      - name: Ruff
+        run: uv run --locked ruff check .
+      - name: Browser motion runtime tests
+        run: node --test tests/test_web_motion.mjs

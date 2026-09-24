@@ -15,6 +15,7 @@ from aster_game.infrastructure.metrics import RuntimeMetrics
 from aster_game.network.messages import CLIENT_MESSAGE_ADAPTER, InputMessage
 from aster_game.network.session import WebSocketSession
 from aster_game.room.manager import RoomManager
+from aster_game.room.room import GameRoom
 
 
 def test_protocol_rejects_out_of_range_and_unknown_fields() -> None:
@@ -22,6 +23,7 @@ def test_protocol_rejects_out_of_range_and_unknown_fields() -> None:
         {"type": "input", "sequence": 1, "move_x": 2.0},
         {"type": "input", "sequence": 1, "unexpected": True},
         {"type": "input", "sequence": 1, "client_tick": 1, "yaw": 0.0},
+        {"type": "attack", "target_id": 2},
     ):
         try:
             CLIENT_MESSAGE_ADAPTER.validate_python(payload)
@@ -97,11 +99,62 @@ def test_room_loop_runs_near_configured_fixed_tick_rate() -> None:
             assert 57.0 <= measured_rate <= 64.0
             metrics_snapshot = metrics.snapshot(1, len(sessions), settings.tick_rate)
             assert metrics_snapshot["server_tick_rate_observed_1s_min_room"] >= 57
-            assert metrics_snapshot["snapshot_send_rate_1s"] >= 16 * 57
+            assert metrics_snapshot["snapshot_enqueue_rate_1s"] >= 16 * 57
+            for phase in ("movement_solver", "physics", "snapshot"):
+                assert metrics_snapshot[f"{phase}_duration_ms_avg"] >= 0
+                assert metrics_snapshot[f"{phase}_duration_ms_last"] >= 0
+                assert metrics_snapshot[f"{phase}_duration_ms_p95"] >= 0
         finally:
             await manager.close()
 
     asyncio.run(scenario())
+
+
+def test_snapshot_profiles_keep_owner_ack_out_of_remote_motion_state() -> None:
+    settings = Settings(max_players_per_room=2)
+    metrics = RuntimeMetrics()
+    room = GameRoom("snapshot-profiles", settings, metrics)
+    first = WebSocketSession(None, 64)  # type: ignore[arg-type]
+    second = WebSocketSession(None, 64)  # type: ignore[arg-type]
+    try:
+        first.entity_id = room.add_player(first, "pilot-a", "Pilot A")
+        second.entity_id = room.add_player(second, "pilot-b", "Pilot B")
+        room._dispatch_snapshot()
+
+        first_message, first_serialized = first._outbound[-1]
+        second_message, second_serialized = second._outbound[-1]
+        first_wire = json.loads(first_serialized)
+        second_wire = json.loads(second_serialized)
+        assert first_wire == first_message
+        assert second_wire == second_message
+        assert first_wire["owner"]["player_id"] == "pilot-a"
+        assert second_wire["owner"]["player_id"] == "pilot-b"
+        assert [player["player_id"] for player in first_wire["players"]] == ["pilot-b"]
+        assert [player["player_id"] for player in second_wire["players"]] == ["pilot-a"]
+        owner = first_wire["owner"]
+        remote = first_wire["players"][0]
+        assert "last_processed_input" in owner
+        assert "jump_available_tick" in owner
+        assert {"velocity", "character_yaw", "locomotion_phase", "floor_normal"} <= remote.keys()
+        assert "last_processed_input" not in remote
+        assert "ground_contact_point" not in remote
+
+        full_world = room.world.snapshot()
+        full_payload = json.dumps(
+            {"type": "snapshot", **full_world}, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+        max_profile_size = max(
+            len(first_serialized.encode("utf-8")), len(second_serialized.encode("utf-8"))
+        )
+        assert max_profile_size < len(full_payload)
+        measured = metrics.snapshot(1, 2, settings.tick_rate)
+        assert measured["snapshot_messages_enqueued_total"] == 2
+        assert measured["snapshot_size_bytes_last"] == max(
+            len(first_serialized.encode("utf-8")), len(second_serialized.encode("utf-8"))
+        )
+        assert measured["snapshot_size_bytes_avg_last_tick"] > 0
+    finally:
+        asyncio.run(room.close())
 
 
 def test_websocket_handshake_commands_snapshot_and_metrics(monkeypatch) -> None:
@@ -151,10 +204,18 @@ def test_websocket_handshake_commands_snapshot_and_metrics(monkeypatch) -> None:
                 assert unsupported["code"] == "UNSUPPORTED_PROTOCOL"
 
             async with websockets.connect(f"ws://127.0.0.1:{port}/ws") as websocket:
-                await websocket.send(json.dumps({"type": "hello", "protocol_version": 5}))
+                async with websockets.connect(f"ws://127.0.0.1:{port}/ws") as legacy_socket:
+                    await legacy_socket.send(
+                        json.dumps({"type": "hello", "protocol_version": 5})
+                    )
+                    legacy_error = json.loads(await asyncio.wait_for(legacy_socket.recv(), 2.0))
+                    assert legacy_error["type"] == "error"
+                    assert legacy_error["code"] == "UNSUPPORTED_PROTOCOL"
+
+                await websocket.send(json.dumps({"type": "hello", "protocol_version": 6}))
                 welcome = json.loads(await asyncio.wait_for(websocket.recv(), 2.0))
                 assert welcome["type"] == "welcome"
-                assert welcome["protocol_version"] == 5
+                assert welcome["protocol_version"] == 6
                 assert welcome["tick_rate"] == settings.tick_rate
                 assert welcome["snapshot_interval_ticks"] == settings.snapshot_interval_ticks
                 assert welcome["movement_tuning"] == {
@@ -246,15 +307,16 @@ def test_websocket_handshake_commands_snapshot_and_metrics(monkeypatch) -> None:
                 for _ in range(60):
                     message = json.loads(await asyncio.wait_for(websocket.recv(), 2.0))
                     if message["type"] == "snapshot":
-                        player = next(
-                            player
-                            for player in message["players"]
-                            if player["player_id"] == joined["player_id"]
-                        )
+                        player = message["owner"]
+                        assert player["player_id"] == joined["player_id"]
                         if player["last_processed_input"] == 7:
                             assert player["position"][2] > -12.0
                             assert player["movement_mode"] == "grounded"
                             assert "locomotion_phase" in player
+                            assert all(
+                                "last_processed_input" not in remote
+                                for remote in message["players"]
+                            )
                             break
                 else:
                     raise AssertionError("server did not acknowledge input in a snapshot")
@@ -266,6 +328,11 @@ def test_websocket_handshake_commands_snapshot_and_metrics(monkeypatch) -> None:
                 assert metrics["room_count"] == 1
                 assert metrics["player_count"] == 1
                 assert metrics["websocket_connections"] == 1
+                for phase in ("movement_solver", "physics", "snapshot"):
+                    assert metrics[f"{phase}_duration_ms_avg"] >= 0
+                    assert metrics[f"{phase}_duration_ms_last"] >= 0
+                    assert metrics[f"{phase}_duration_ms_p95"] >= 0
+                assert metrics["server_tick_duration_ms_p95"] >= 0
                 assert health_response.json()["status"] == "ok"
         finally:
             server.should_exit = True
