@@ -499,7 +499,7 @@
 
       socket.addEventListener("open", () => {
         setConnection("connected", "Connected · joining");
-        send({ type: "hello", protocol_version: 2 });
+        send({ type: "hello", protocol_version: 3 });
       });
       socket.addEventListener("message", (event) => {
         let message;
@@ -544,18 +544,40 @@
         const tuning = message.movement_tuning;
         const requiredTuning = [
           "walk_speed", "run_speed", "sprint_speed", "air_control", "ground_acceleration",
-          "braking_deceleration", "ground_friction", "air_acceleration", "air_max_speed",
+          "braking_deceleration", "ground_friction", "ground_directional_friction",
+          "turning_deceleration", "pivot_braking_multiplier", "air_acceleration", "air_max_speed",
           "max_rotation_speed", "rotation_acceleration", "rotation_deceleration",
           "turn_in_place_threshold", "pivot_angle_threshold", "jump_speed", "gravity",
           "max_fall_speed", "apex_velocity_threshold", "jump_cooldown_seconds",
           "landing_soft_velocity", "landing_heavy_velocity", "landing_recovery_seconds",
         ];
+        const curveKeys = [
+          "walk_acceleration_curve", "run_acceleration_curve", "sprint_acceleration_curve",
+          "braking_curve", "turn_speed_curve",
+        ];
+        const validCurve = (curve) => {
+          if (!Array.isArray(curve) || curve.length < 2 || curve[0]?.[0] !== 0 || curve.at(-1)?.[0] !== 1) {
+            return false;
+          }
+          let previousX = -1;
+          return curve.every((point) => {
+            if (!Array.isArray(point) || point.length !== 2 ||
+                !Number.isFinite(point[0]) || !Number.isFinite(point[1]) ||
+                point[0] <= previousX || point[1] < 0) return false;
+            previousX = point[0];
+            return true;
+          });
+        };
+        const validCurves = tuning && curveKeys.every((key) =>
+          Object.hasOwn(tuning, key) && validCurve(tuning[key]));
         const validTuning = tuning && requiredTuning.every((key) =>
           Object.hasOwn(tuning, key) && Number.isFinite(tuning[key])) &&
           tuning.walk_speed > 0 && tuning.run_speed >= tuning.walk_speed &&
           tuning.sprint_speed >= tuning.run_speed && tuning.air_control >= 0 && tuning.air_control <= 1 &&
           tuning.ground_acceleration > 0 && tuning.air_acceleration >= 0 &&
           tuning.braking_deceleration >= 0 && tuning.ground_friction >= 0 &&
+          tuning.ground_directional_friction >= 0 && tuning.turning_deceleration >= 0 &&
+          tuning.pivot_braking_multiplier >= 1 && validCurves &&
           tuning.pivot_angle_threshold >= 90 && tuning.pivot_angle_threshold <= 180 &&
           tuning.apex_velocity_threshold >= 0 && tuning.air_max_speed > 0 &&
           tuning.max_rotation_speed > 0 && tuning.rotation_acceleration > 0 &&
@@ -564,7 +586,7 @@
           tuning.jump_cooldown_seconds >= 0 && tuning.landing_soft_velocity >= 0 &&
           tuning.landing_heavy_velocity > tuning.landing_soft_velocity &&
           tuning.landing_recovery_seconds >= 0;
-        if (message.protocol_version !== 2 || !Number.isInteger(message.tick_rate) || message.tick_rate < 60 || message.tick_rate > 120 || !Number.isInteger(message.snapshot_interval_ticks) || message.snapshot_interval_ticks < 1 || !validTuning) {
+        if (message.protocol_version !== 3 || !Number.isInteger(message.tick_rate) || message.tick_rate < 60 || message.tick_rate > 120 || !Number.isInteger(message.snapshot_interval_ticks) || message.snapshot_interval_ticks < 1 || !validTuning) {
           setConnection("error", "Server must support 60 Hz");
           addEvent("Server must provide 60–120 Hz tick_rate and valid movement_tuning.", "error");
           socket?.close(1002, "unsupported simulation rate or missing movement tuning");
@@ -687,7 +709,9 @@
         move_x: moveX,
         move_z: moveZ,
         jump: pressed.has("Space"),
-        sprint: pressed.has("ShiftLeft") || pressed.has("ShiftRight"),
+        requested_gait: pressed.has("ShiftLeft") || pressed.has("ShiftRight")
+          ? "sprint"
+          : pressed.has("AltLeft") || pressed.has("AltRight") ? "walk" : "run",
         view_yaw: viewYaw,
         view_pitch: viewPitch,
         rotation_mode: rotationMode,
@@ -773,7 +797,7 @@
       $("yawValue").textContent = `${Number(viewYaw).toFixed(1)}°`;
       const ackDelay = lastAckDelayMs === null ? "—" : `${Math.round(lastAckDelayMs)} ms`;
       $("ackValue").textContent = `#${self.last_processed_input} · ${ackDelay}`;
-      $("movementValue").textContent = `${self.movement_mode.toUpperCase()} · ${self.gait.toUpperCase()}`;
+      $("movementValue").textContent = `${self.movement_mode.toUpperCase()} · ${self.actual_gait.toUpperCase()} (requested ${self.requested_gait.toUpperCase()})`;
       $("phaseValue").textContent = `${self.locomotion_phase.toUpperCase()} · ${self.action_layer.toUpperCase()} · ${self.life_state.toUpperCase()}`;
       $("rotationModeValue").textContent = self.rotation_mode.toUpperCase();
       $("accelValue").textContent = formatVector(self.acceleration);

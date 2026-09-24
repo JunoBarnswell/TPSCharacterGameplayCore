@@ -15,6 +15,12 @@ class Gait(StrEnum):
     SPRINT = "sprint"
 
 
+class RequestedGait(StrEnum):
+    WALK = "walk"
+    RUN = "run"
+    SPRINT = "sprint"
+
+
 class RotationMode(StrEnum):
     ORIENT_TO_MOVEMENT = "orient_to_movement"
     STRAFE = "strafe"
@@ -66,7 +72,8 @@ class CharacterMovementState:
     ground_contact_point: tuple[float, float, float] | None = None
     ground_entity: str | None = None
     movement_mode: MovementMode = MovementMode.AIRBORNE
-    gait: Gait = Gait.IDLE
+    actual_gait: Gait = Gait.IDLE
+    requested_gait: RequestedGait = RequestedGait.RUN
     character_yaw: float = 0.0
     desired_facing_yaw: float = 0.0
     angular_velocity: float = 0.0
@@ -79,7 +86,6 @@ class CharacterMovementState:
     locomotion_phase: LocomotionPhase = LocomotionPhase.IDLE
     move_x: float = 0.0
     move_z: float = 0.0
-    sprint: bool = False
     jump_held: bool = False
     jump_requested: bool = False
     last_input_tick: int = 0

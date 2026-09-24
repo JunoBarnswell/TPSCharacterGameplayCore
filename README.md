@@ -30,7 +30,7 @@ node --test tests/test_web_motion.mjs
 ```
 
 Health and in-memory server metrics are available at `/healthz` and `/metrics`. WebSocket clients
-connect to `/ws`, send `hello` with protocol version `2`, then `join_game`. Omitting `room_id` joins
+connect to `/ws`, send `hello` with protocol version `3`, then `join_game`. Omitting `room_id` joins
 an available room or creates one. Explicit room IDs only join an existing room.
 
 Open `http://127.0.0.1:8000/` for the Character Motion Lab. It predicts using the same acceleration,
@@ -48,21 +48,23 @@ The protocol is JSON. Client messages are `hello`, `join_game`, `input`, `attack
 `ping`. Server messages include `welcome`, `joined`, `snapshot`, gameplay events, `pong`, and
 `error`. The detailed wire models live in `aster_game/network/messages.py`.
 
-Protocol v2 example client flow:
+Protocol v3 example client flow:
 
 ```json
-{"type":"hello","protocol_version":2}
+{"type":"hello","protocol_version":3}
 {"type":"join_game","player_name":"Player One"}
-{"type":"input","sequence":1,"client_tick":1,"move_x":0,"move_z":1,"jump":false,"sprint":false,"view_yaw":0,"view_pitch":0,"rotation_mode":"orient_to_movement"}
+{"type":"input","sequence":1,"client_tick":1,"move_x":0,"move_z":1,"jump":false,"requested_gait":"run","view_yaw":0,"view_pitch":0,"rotation_mode":"orient_to_movement"}
 {"type":"attack"}
 ```
 
-`input` contains intent only; position, velocity, and character facing are server-owned. `view_yaw`
-and `view_pitch` are degrees; movement axes are clamped to `[-1, 1]`, and sequences must increase.
+`input` contains intent only; position, velocity, and character facing are server-owned. `requested_gait`
+is `walk`, `run`, or `sprint`; snapshots separately report requested and speed-derived actual gait.
+Movement tuning includes piecewise acceleration, braking, and turn-speed curves. `view_yaw` and
+`view_pitch` are degrees; movement axes are clamped to `[-1, 1]`, and sequences must increase.
 Repeated movement input is coalesced per tick while jump press edges are retained. The server
-acknowledges the latest applied sequence in each player's snapshot. Protocol v2 intentionally removes
-the old client-authored `yaw` and mutually exclusive character `state` fields; no v1 alias is kept.
-Messages larger than 16 KiB are rejected by the WebSocket server.
+acknowledges the latest applied sequence in each player's snapshot. Protocol v3 intentionally removes
+the old `sprint` boolean, client-authored `yaw`, and mutually exclusive character `state` fields; no v2
+or v1 aliases are kept. Messages larger than 16 KiB are rejected by the WebSocket server.
 
 Gameplay events include `motion_state_changed`, `jump_started`, `rising`, `apex_reached`,
 `fall_started`, `fall_impact`, `landing_started`, `landed`, `attack_fired`, `attack_rejected`, `hit`,

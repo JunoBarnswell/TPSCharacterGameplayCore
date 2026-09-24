@@ -142,10 +142,10 @@ def test_websocket_handshake_commands_snapshot_and_metrics(monkeypatch) -> None:
                 assert "solveHorizontalVelocity" in motion_asset.text
 
             async with websockets.connect(f"ws://127.0.0.1:{port}/ws") as websocket:
-                await websocket.send(json.dumps({"type": "hello", "protocol_version": 2}))
+                await websocket.send(json.dumps({"type": "hello", "protocol_version": 3}))
                 welcome = json.loads(await asyncio.wait_for(websocket.recv(), 2.0))
                 assert welcome["type"] == "welcome"
-                assert welcome["protocol_version"] == 2
+                assert welcome["protocol_version"] == 3
                 assert welcome["tick_rate"] == settings.tick_rate
                 assert welcome["snapshot_interval_ticks"] == settings.snapshot_interval_ticks
                 assert welcome["movement_tuning"] == {
@@ -156,11 +156,25 @@ def test_websocket_handshake_commands_snapshot_and_metrics(monkeypatch) -> None:
                     "ground_acceleration": settings.ground_acceleration,
                     "braking_deceleration": settings.braking_deceleration,
                     "ground_friction": settings.ground_friction,
+                    "ground_directional_friction": settings.ground_directional_friction,
+                    "turning_deceleration": settings.turning_deceleration,
+                    "pivot_braking_multiplier": settings.pivot_braking_multiplier,
                     "air_acceleration": settings.air_acceleration,
                     "air_max_speed": settings.air_max_speed,
                     "max_rotation_speed": settings.max_rotation_speed,
                     "rotation_acceleration": settings.rotation_acceleration,
                     "rotation_deceleration": settings.rotation_deceleration,
+                    "walk_acceleration_curve": [
+                        list(point) for point in settings.walk_acceleration_curve
+                    ],
+                    "run_acceleration_curve": [
+                        list(point) for point in settings.run_acceleration_curve
+                    ],
+                    "sprint_acceleration_curve": [
+                        list(point) for point in settings.sprint_acceleration_curve
+                    ],
+                    "braking_curve": [list(point) for point in settings.braking_curve],
+                    "turn_speed_curve": [list(point) for point in settings.turn_speed_curve],
                     "turn_in_place_threshold": settings.turn_in_place_threshold,
                     "pivot_angle_threshold": settings.pivot_angle_threshold,
                     "jump_speed": settings.jump_speed,
@@ -193,7 +207,7 @@ def test_websocket_handshake_commands_snapshot_and_metrics(monkeypatch) -> None:
                             "move_x": 0.0,
                             "move_z": 1.0,
                             "jump": False,
-                            "sprint": True,
+                            "requested_gait": "sprint",
                             "view_yaw": 0.0,
                             "view_pitch": 0.0,
                             "rotation_mode": "orient_to_movement",

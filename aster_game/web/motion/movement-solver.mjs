@@ -6,16 +6,42 @@ export function angleDelta(target, current) {
   return normalizeDegrees(target - current);
 }
 
+export function evaluateResponseCurve(points, value) {
+  if (!Array.isArray(points) || points.length < 2) {
+    throw new RangeError("response curves require at least two points");
+  }
+  const x = Math.max(0, Math.min(1, value));
+  if (x <= points[0][0]) return points[0][1];
+  for (let index = 0; index < points.length - 1; index++) {
+    const [x0, y0] = points[index];
+    const [x1, y1] = points[index + 1];
+    if (x <= x1) {
+      const alpha = (x - x0) / (x1 - x0);
+      return y0 + (y1 - y0) * alpha;
+    }
+  }
+  return points.at(-1)[1];
+}
+
+const defaultAccelerationCurve = [[0, 1.35], [0.5, 1], [1, 0.65]];
+const defaultBrakingCurve = [[0, 0.6], [0.35, 1], [1, 1.35]];
+const defaultTurnSpeedCurve = [[0, 0.22], [0.25, 0.55], [1, 1]];
+
 export function desiredMotion(input, tuning) {
   const axisLength = Math.hypot(input.move_x, input.move_z);
-  if (axisLength <= 1e-4) return { velocity: [0, 0, 0], direction: [0, 0, 0], gait: "idle" };
+  if (axisLength <= 1e-4) {
+    return { velocity: [0, 0, 0], direction: [0, 0, 0], requestedGait: input.requested_gait };
+  }
   const scale = Math.min(1, axisLength) / axisLength;
   const localX = input.move_x * scale;
   const localZ = input.move_z * scale;
-  const speed = input.sprint
-    ? tuning.sprint_speed
-    : axisLength > 0.72 ? tuning.run_speed : tuning.walk_speed;
-  const gait = input.sprint ? "sprint" : axisLength > 0.72 ? "run" : "walk";
+  const speeds = {
+    walk: tuning.walk_speed,
+    run: tuning.run_speed,
+    sprint: tuning.sprint_speed,
+  };
+  const speed = speeds[input.requested_gait];
+  if (speed === undefined) throw new RangeError(`unknown requested gait: ${input.requested_gait}`);
   const angle = input.view_yaw * Math.PI / 180;
   const x = localX * Math.cos(angle) + localZ * Math.sin(angle);
   const z = -localX * Math.sin(angle) + localZ * Math.cos(angle);
@@ -23,29 +49,78 @@ export function desiredMotion(input, tuning) {
   return {
     velocity: [x * speed, 0, z * speed],
     direction: [x / magnitude, 0, z / magnitude],
-    gait,
+    requestedGait: input.requested_gait,
   };
 }
 
-export function solveHorizontalVelocity(current, desired, dt, grounded, tuning) {
+function moveTowards(current, target, maxDelta) {
+  const dx = target[0] - current[0];
+  const dz = target[1] - current[1];
+  const distance = Math.hypot(dx, dz);
+  if (distance <= maxDelta || distance <= 1e-12) return target;
+  const scale = maxDelta / distance;
+  return [current[0] + dx * scale, current[1] + dz * scale];
+}
+
+export function deriveActualGait(horizontalSpeed, tuning) {
+  if (horizontalSpeed <= 0.1) return "idle";
+  if (horizontalSpeed < (tuning.walk_speed + tuning.run_speed) / 2) return "walk";
+  if (horizontalSpeed < (tuning.run_speed + tuning.sprint_speed) / 2) return "run";
+  return "sprint";
+}
+
+export function solveHorizontalVelocity(current, desired, dt, grounded, tuning, requestedGait = "run") {
+  if (!(dt > 0)) throw new RangeError("dt must be positive");
   let vx = current[0];
   let vz = current[2];
   const dx = desired[0];
   const dz = desired[2];
+  const desiredSpeed = Math.hypot(dx, dz);
   if (grounded) {
-    if (Math.hypot(dx, dz) <= 1e-6) {
+    if (desiredSpeed <= 1e-6) {
       const speed = Math.hypot(vx, vz);
-      const amount = Math.min(speed, (tuning.braking_deceleration + tuning.ground_friction * speed) * dt);
+      const brakingCurve = tuning.braking_curve ?? defaultBrakingCurve;
+      const response = evaluateResponseCurve(brakingCurve, speed / tuning.sprint_speed);
+      const deceleration = tuning.braking_deceleration * response + tuning.ground_friction * speed;
+      const amount = Math.min(speed, deceleration * dt);
       const factor = speed ? (speed - amount) / speed : 0;
       vx *= factor;
       vz *= factor;
     } else {
-      const changeX = dx - vx;
-      const changeZ = dz - vz;
-      const changeLength = Math.hypot(changeX, changeZ);
-      const factor = changeLength ? Math.min(1, tuning.ground_acceleration * dt / changeLength) : 1;
-      vx += changeX * factor;
-      vz += changeZ * factor;
+      const directionX = dx / desiredSpeed;
+      const directionZ = dz / desiredSpeed;
+      const projection = vx * directionX + vz * directionZ;
+      const lateralX = vx - projection * directionX;
+      const lateralZ = vz - projection * directionZ;
+      const lateralSpeed = Math.hypot(lateralX, lateralZ);
+      const lateralReduction = Math.min(
+        lateralSpeed,
+        (tuning.ground_directional_friction ?? 9) * dt,
+      );
+      const lateralScale = lateralSpeed ? (lateralSpeed - lateralReduction) / lateralSpeed : 0;
+      vx = projection * directionX + lateralX * lateralScale;
+      vz = projection * directionZ + lateralZ * lateralScale;
+
+      const currentSpeed = Math.hypot(vx, vz);
+      if (currentSpeed > 1e-6) {
+        const dot = Math.max(-1, Math.min(1, (vx * directionX + vz * directionZ) / currentSpeed));
+        const turnFraction = (1 - dot) * 0.5;
+        let turnDeceleration = (tuning.turning_deceleration ?? 7) * turnFraction;
+        const pivotThreshold = tuning.pivot_angle_threshold ?? 135;
+        if (dot <= Math.cos(pivotThreshold * Math.PI / 180)) {
+          turnDeceleration *= tuning.pivot_braking_multiplier ?? 1.75;
+        }
+        const braking = Math.min(currentSpeed, turnDeceleration * dt);
+        const turnScale = (currentSpeed - braking) / currentSpeed;
+        vx *= turnScale;
+        vz *= turnScale;
+      }
+
+      const accelerationCurve = tuning[`${requestedGait}_acceleration_curve`] ?? defaultAccelerationCurve;
+      const speedFraction = Math.min(1, Math.hypot(vx, vz) / tuning.sprint_speed);
+      const response = evaluateResponseCurve(accelerationCurve, speedFraction);
+      const maxChange = tuning.ground_acceleration * response * dt;
+      [vx, vz] = moveTowards([vx, vz], [dx, dz], maxChange);
     }
   } else {
     const changeX = dx - vx;
@@ -68,11 +143,17 @@ export function solveHorizontalVelocity(current, desired, dt, grounded, tuning) 
 }
 
 export function solveRotation(currentYaw, angularVelocity, desiredYaw, dt, tuning) {
+  if (!(dt > 0)) throw new RangeError("dt must be positive");
   const difference = angleDelta(desiredYaw, currentYaw);
+  const turnFraction = Math.min(1, Math.abs(difference) / 180);
+  const effectiveMaxSpeed = tuning.max_rotation_speed * evaluateResponseCurve(
+    tuning.turn_speed_curve ?? defaultTurnSpeedCurve,
+    turnFraction,
+  );
   const brakeRate = Math.sqrt(2 * tuning.rotation_acceleration * Math.abs(difference));
   const targetRate = Math.abs(difference) <= 1e-5
     ? 0
-    : Math.sign(difference) * Math.min(tuning.max_rotation_speed, brakeRate);
+    : Math.sign(difference) * Math.min(effectiveMaxSpeed, brakeRate);
   const rateLimit = angularVelocity * targetRate >= 0
     ? tuning.rotation_acceleration
     : tuning.rotation_deceleration;
@@ -90,7 +171,14 @@ export function predictMovementStep(state, input, tuning, dt) {
   const desired = desiredMotion(input, tuning);
   const desiredSpeed = Math.hypot(desired.velocity[0], desired.velocity[2]);
   const grounded = state.grounded && state.walkable_floor !== false;
-  const solved = solveHorizontalVelocity(state.velocity, desired.velocity, dt, grounded, tuning);
+  const solved = solveHorizontalVelocity(
+    state.velocity,
+    desired.velocity,
+    dt,
+    grounded,
+    tuning,
+    desired.requestedGait,
+  );
   const simulationTick = Number(state.simulation_tick ?? state.server_tick ?? 0);
   const jumpPressed = input.jump && !state.jump_held && grounded &&
     simulationTick >= Number(state.jump_available_tick ?? 0);
@@ -218,7 +306,8 @@ export function predictMovementStep(state, input, tuning, dt) {
     aim_pitch: input.view_pitch,
     movement_mode: nextGrounded ? "grounded" : "airborne",
     grounded: nextGrounded,
-    gait: desired.gait,
+    actual_gait: deriveActualGait(Math.hypot(solved.velocity[0], solved.velocity[2]), tuning),
+    requested_gait: desired.requestedGait,
     rotation_mode: input.rotation_mode,
     locomotion_phase: phase,
     phase_until_tick: phaseUntilTick,

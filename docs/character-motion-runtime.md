@@ -16,8 +16,9 @@ uses `requestAnimationFrame` and can render at its display rate.
 `CharacterMovementState` owns velocity, acceleration, desired movement, floor sample, movement mode,
 gait, facing/view rotations, rotation mode, and locomotion phase. `Character` separately owns
 `ActionLayer` and `LifeState`. A hit reaction therefore overlays locomotion instead of replacing it.
-The protocol is version 2 and removes the old single `state` and input `yaw` fields without a legacy
-alias.
+The protocol is version 3 and removes the old single `state`, input `yaw`, and `sprint` boolean fields
+without legacy aliases. Input requests `walk`, `run`, or `sprint`; the server independently derives
+actual gait from solved horizontal speed.
 
 ## Simulation order
 
@@ -29,10 +30,12 @@ alias.
 6. Resolve attacks/projectiles, damage, health, and death in separate stages.
 7. Derive locomotion/action/life channels and publish snapshots.
 
-Grounded movement approaches the desired horizontal velocity with a bounded acceleration. Braking
-combines configured deceleration and speed-scaled ground friction. Air steering changes existing
-horizontal velocity by a bounded acceleration and never replaces it with a fraction of desired speed.
-View rotation is input; character facing is server-solved and rate limited.
+Grounded movement approaches the desired horizontal velocity with gait-specific piecewise acceleration
+curves. Braking combines a normalized piecewise response curve with configured deceleration and
+speed-scaled ground friction. Direction changes preserve lateral momentum while directional friction
+and turn/pivot deceleration resist abrupt changes. Air steering changes existing horizontal velocity
+by a bounded acceleration and never replaces it with a fraction of desired speed. View rotation is
+input; character facing is server-solved and rate limited with a configured turn-speed curve.
 
 ## Network motion
 
@@ -43,7 +46,8 @@ inputs. Reconciliation offset is applied to a separate visual position and decay
 snap threshold for teleports or large errors. Remote snapshots retain tick, position, velocity, and
 rotation; render time is delayed and cubic Hermite interpolation uses endpoint velocities.
 
-The JSON wire model is strict. Protocol version 2 carries `view_yaw`, `view_pitch`, and `rotation_mode`
+The JSON wire model is strict. Protocol version 3 carries `view_yaw`, `view_pitch`, `rotation_mode`, and
+`requested_gait`; snapshots report `actual_gait` separately. The JSON tuning contains the solver curves.
 on input; snapshots carry the independent movement channels, floor sample, aim offset, and ACK.
 
 ## Browser animation runtime

@@ -36,7 +36,7 @@ class StateSystem:
             if character.life_state is LifeState.DEAD:
                 character.action_layer = ActionLayer.DEATH
                 movement.movement_mode = MovementMode.DISABLED
-                movement.gait = Gait.IDLE
+                movement.actual_gait = Gait.IDLE
                 movement.locomotion_phase = LocomotionPhase.IDLE
             elif world.tick_id >= character.action_until_tick and character.action_layer in {
                 ActionLayer.ATTACK,
@@ -50,7 +50,7 @@ class StateSystem:
 
             channels = (
                 movement.movement_mode.value,
-                movement.gait.value,
+                movement.actual_gait.value,
                 movement.locomotion_phase.value,
                 movement.rotation_mode.value,
                 character.action_layer.value,

@@ -8,6 +8,7 @@ from panda3d.core import BitMask32, Point3, Vec3
 from aster_game.game.events import DamageRequest, DamageType
 from aster_game.game.movement.solver import (
     angle_delta,
+    derive_actual_gait,
     desired_facing_yaw,
     desired_motion,
     landing_classification,
@@ -15,9 +16,11 @@ from aster_game.game.movement.solver import (
     solve_rotation,
 )
 from aster_game.game.movement.state import (
+    Gait,
     LifeState,
     LocomotionPhase,
     MovementMode,
+    RequestedGait,
     RotationMode,
 )
 
@@ -34,7 +37,7 @@ class CommandSystem:
             movement = character.movement
             movement.move_x = command.move_x
             movement.move_z = command.move_z
-            movement.sprint = command.sprint
+            movement.requested_gait = command.requested_gait
             movement.view_yaw = command.view_yaw
             movement.view_pitch = command.view_pitch
             movement.rotation_mode = RotationMode(command.rotation_mode)
@@ -68,13 +71,13 @@ class MovementSystem:
             if world.tick_id - movement.last_input_tick > input_timeout_ticks:
                 movement.move_x = 0.0
                 movement.move_z = 0.0
-                movement.sprint = False
+                movement.requested_gait = RequestedGait.RUN
                 movement.jump_held = False
 
-            desired, direction, gait = desired_motion(
+            desired, direction = desired_motion(
                 movement.move_x,
                 movement.move_z,
-                movement.sprint,
+                movement.requested_gait,
                 movement.view_yaw,
                 settings.walk_speed,
                 settings.run_speed,
@@ -82,7 +85,11 @@ class MovementSystem:
             )
             movement.desired_velocity = desired
             movement.desired_move_direction = direction
-            movement.gait = gait
+            acceleration_curve = {
+                RequestedGait.WALK: settings.walk_acceleration_curve,
+                RequestedGait.RUN: settings.run_acceleration_curve,
+                RequestedGait.SPRINT: settings.sprint_acceleration_curve,
+            }[movement.requested_gait]
             horizontal, acceleration = solve_horizontal_velocity(
                 (movement.velocity[0], movement.velocity[2]),
                 (desired[0], desired[2]),
@@ -94,6 +101,13 @@ class MovementSystem:
                 air_acceleration=settings.air_acceleration,
                 air_control=settings.air_control,
                 air_max_speed=settings.air_max_speed,
+                ground_directional_friction=settings.ground_directional_friction,
+                turning_deceleration=settings.turning_deceleration,
+                pivot_braking_multiplier=settings.pivot_braking_multiplier,
+                pivot_angle_threshold=settings.pivot_angle_threshold,
+                acceleration_curve=acceleration_curve,
+                braking_curve=settings.braking_curve,
+                reference_speed=settings.sprint_speed,
             )
             movement.acceleration = (acceleration[0], movement.acceleration[1], acceleration[1])
             character.physics.controller.setLinearMovement(
@@ -126,6 +140,7 @@ class MovementSystem:
                 max_speed=settings.max_rotation_speed,
                 acceleration=settings.rotation_acceleration,
                 deceleration=settings.rotation_deceleration,
+                turn_speed_curve=settings.turn_speed_curve,
             )
             movement.character_yaw = yaw
             movement.angular_velocity = angular_velocity
@@ -175,6 +190,7 @@ class PhysicsStepSystem:
                 movement.velocity = (0.0, 0.0, 0.0)
                 movement.horizontal_speed = 0.0
                 movement.vertical_speed = 0.0
+                movement.actual_gait = Gait.IDLE
                 continue
             position = character.physics.node_path.getPos()
             new_position = (float(position.x), float(position.y), float(position.z))
@@ -188,6 +204,12 @@ class PhysicsStepSystem:
             movement.horizontal_speed = hypot(movement.velocity[0], movement.velocity[2])
             movement.current_speed = hypot(movement.horizontal_speed, movement.velocity[1])
             movement.vertical_speed = movement.velocity[1]
+            movement.actual_gait = derive_actual_gait(
+                movement.horizontal_speed,
+                world.settings.walk_speed,
+                world.settings.run_speed,
+                world.settings.sprint_speed,
+            )
             movement.acceleration = (
                 movement.acceleration[0],
                 (movement.velocity[1] - previous_vertical) / dt,

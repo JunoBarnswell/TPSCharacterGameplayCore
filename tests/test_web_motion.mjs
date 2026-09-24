@@ -1,8 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
   angleDelta,
+  deriveActualGait,
+  evaluateResponseCurve,
+  desiredMotion,
   predictMovementStep,
   solveHorizontalVelocity,
   solveRotation,
@@ -24,10 +28,22 @@ import { evaluateAimOffset } from "../aster_game/web/animation/aim-offset.mjs";
 import { orientationWarpAngle } from "../aster_game/web/animation/orientation-warp.mjs";
 
 const dt = 1 / 60;
+const goldenVectors = JSON.parse(readFileSync(
+  new URL("./fixtures/movement-golden-vectors.json", import.meta.url),
+  "utf8",
+));
 const tuning = {
   walk_speed: 2,
   run_speed: 4.5,
   sprint_speed: 6.5,
+  ground_directional_friction: 9,
+  turning_deceleration: 7,
+  pivot_braking_multiplier: 1.75,
+  walk_acceleration_curve: [[0, 1.25], [0.5, 1], [1, 0.6]],
+  run_acceleration_curve: [[0, 1.35], [0.5, 1], [1, 0.65]],
+  sprint_acceleration_curve: [[0, 1.5], [0.5, 1], [1, 0.7]],
+  braking_curve: [[0, 0.6], [0.35, 1], [1, 1.35]],
+  turn_speed_curve: [[0, 0.22], [0.25, 0.55], [1, 1]],
   air_control: 0.45,
   ground_acceleration: 24,
   braking_deceleration: 16,
@@ -61,7 +77,8 @@ function idleState() {
     grounded: true,
     walkable_floor: true,
     movement_mode: "grounded",
-    gait: "idle",
+    actual_gait: "idle",
+    requested_gait: "run",
     character_yaw: 0,
     desired_facing_yaw: 0,
     angular_velocity: 0,
@@ -85,7 +102,7 @@ function input(sequence, moveZ = 1) {
     move_x: 0,
     move_z: moveZ,
     jump: false,
-    sprint: false,
+    requested_gait: "run",
     view_yaw: 0,
     view_pitch: 0,
     rotation_mode: "orient_to_movement",
@@ -99,6 +116,86 @@ test("movement acceleration and braking match the authoritative solver", () => {
   const braking = solveHorizontalVelocity(first.velocity, [0, 0, 0], dt, true, tuning);
   assert.ok(braking.velocity[2] < first.velocity[2]);
   assert.ok(braking.velocity[2] > 0);
+});
+
+test("JavaScript solver matches the shared Python movement golden vectors", () => {
+  const goldenTuning = goldenVectors.tuning;
+  for (const sample of goldenVectors.cases) {
+    const desired = [sample.desired[0], 0, sample.desired[1]];
+    const current = [sample.current[0], 0, sample.current[1]];
+    const result = solveHorizontalVelocity(
+      current,
+      desired,
+      goldenVectors.dt,
+      sample.grounded,
+      goldenTuning,
+      sample.requested_gait,
+    );
+    const expected = sample.expected;
+    assertVector(
+      [result.velocity[0], result.velocity[2]],
+      expected.velocity,
+      sample.name,
+    );
+    assertVector(
+      [result.acceleration[0], result.acceleration[2]],
+      expected.acceleration,
+      sample.name,
+    );
+    assert.equal(
+      deriveActualGait(Math.hypot(result.velocity[0], result.velocity[2]), goldenTuning),
+      expected.actual_gait,
+      sample.name,
+    );
+    assert.equal(sample.grounded ? "grounded" : "airborne", expected.movement_mode);
+  }
+  const rotation = goldenVectors.rotation;
+  const solvedRotation = solveRotation(
+    rotation.current_yaw,
+    rotation.angular_velocity,
+    rotation.desired_yaw,
+    goldenVectors.dt,
+    goldenTuning,
+  );
+  assert.ok(Math.abs(solvedRotation.yaw - rotation.expected_yaw) < 1e-10);
+  assert.ok(Math.abs(solvedRotation.angularVelocity - rotation.expected_angular_velocity) < 1e-10);
+});
+
+function assertVector(actual, expected, label) {
+  assert.equal(actual.length, expected.length, label);
+  for (let index = 0; index < expected.length; index++) {
+    assert.ok(Math.abs(actual[index] - expected[index]) <= 1e-9, `${label}[${index}]`);
+  }
+}
+
+test("requested sprint remains distinct while actual gait ramps through speed bands", () => {
+  const requested = desiredMotion({ ...input(1), requested_gait: "sprint" }, tuning);
+  assert.equal(requested.requestedGait, "sprint");
+  assert.equal(Math.hypot(requested.velocity[0], requested.velocity[2]), tuning.sprint_speed);
+
+  let state = { ...idleState(), simulation_tick: 1 };
+  state = predictMovementStep(state, { ...input(1), requested_gait: "sprint" }, tuning, dt);
+  assert.equal(state.requested_gait, "sprint");
+  assert.equal(state.actual_gait, "walk");
+  for (let sequence = 2; sequence <= 180; sequence++) {
+    state = predictMovementStep(
+      state,
+      { ...input(sequence), requested_gait: "sprint" },
+      tuning,
+      dt,
+    );
+  }
+  assert.equal(state.actual_gait, "sprint");
+  assert.equal(deriveActualGait(0, tuning), "idle");
+});
+
+test("direction changes retain momentum and 180 degree pivots brake harder", () => {
+  const quarterTurn = solveHorizontalVelocity([0, 0, 6.5], [6.5, 0, 0], dt, true, tuning, "run");
+  const pivot = solveHorizontalVelocity([0, 0, 6.5], [0, 0, -6.5], dt, true, tuning, "run");
+  assert.ok(quarterTurn.velocity[2] > 6);
+  assert.ok(quarterTurn.velocity[0] > 0);
+  assert.ok(pivot.velocity[2] > 0);
+  assert.ok(Math.hypot(...pivot.velocity) < Math.hypot(...quarterTurn.velocity));
 });
 
 test("air steering keeps inherited velocity and applies bounded acceleration", () => {

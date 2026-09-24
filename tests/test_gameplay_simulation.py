@@ -3,7 +3,7 @@ from __future__ import annotations
 from aster_game.app.config import Settings
 from aster_game.game.components import InputCommand
 from aster_game.game.events import DamageRequest, DamageType
-from aster_game.game.movement.state import LifeState
+from aster_game.game.movement.state import LifeState, RequestedGait
 from aster_game.game.world import GameWorld
 from aster_game.infrastructure.metrics import RuntimeMetrics
 
@@ -29,14 +29,24 @@ def test_input_sequence_is_authoritative_and_movement_is_speed_limited() -> None
             assert world.queue_input(
                 character.entity_id,
                 InputCommand(
-                    sequence, sequence, 0.0, 1.0, False, True, 0.0, 0.0, "orient_to_movement"
+                    sequence,
+                    sequence,
+                    0.0,
+                    1.0,
+                    False,
+                    RequestedGait.SPRINT,
+                    0.0,
+                    0.0,
+                    "orient_to_movement",
                 ),
             )
             world.tick(world.settings.fixed_dt)
 
         assert not world.queue_input(
             character.entity_id,
-            InputCommand(10, 10, 0.0, 1.0, False, True, 0.0, 0.0, "orient_to_movement"),
+            InputCommand(
+                10, 10, 0.0, 1.0, False, RequestedGait.SPRINT, 0.0, 0.0, "orient_to_movement"
+            ),
         )
         displacement = character.transform.position[2] - start[2]
         assert displacement > 0.0
@@ -60,7 +70,9 @@ def test_jump_enters_air_and_returns_to_ground() -> None:
 
         assert world.queue_input(
             character.entity_id,
-            InputCommand(1, 1, 0.0, 0.0, True, False, 0.0, 0.0, "orient_to_movement"),
+            InputCommand(
+                1, 1, 0.0, 0.0, True, RequestedGait.RUN, 0.0, 0.0, "orient_to_movement"
+            ),
         )
         events = []
         highest_y = ground_y
@@ -163,7 +175,9 @@ def test_projectile_hit_death_and_respawn_restore_character_state() -> None:
         assert any(event.type == "death" for event in events)
         assert not world.queue_input(
             target.entity_id,
-            InputCommand(1, 1, 0.0, 1.0, False, True, 0.0, 0.0, "orient_to_movement"),
+            InputCommand(
+                1, 1, 0.0, 1.0, False, RequestedGait.SPRINT, 0.0, 0.0, "orient_to_movement"
+            ),
         )
 
         assert world.queue_respawn(target.entity_id)

@@ -2,7 +2,7 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
-from aster_game.game.movement.state import RotationMode
+from aster_game.game.movement.state import RequestedGait, RotationMode
 
 
 class WireModel(BaseModel):
@@ -35,7 +35,7 @@ class InputMessage(WireModel):
     move_x: float = Field(default=0.0, ge=-1.0, le=1.0, allow_inf_nan=False)
     move_z: float = Field(default=0.0, ge=-1.0, le=1.0, allow_inf_nan=False)
     jump: bool = False
-    sprint: bool = False
+    requested_gait: RequestedGait = RequestedGait.RUN
     view_yaw: float = Field(default=0.0, ge=-180.0, le=180.0, allow_inf_nan=False)
     view_pitch: float = Field(default=0.0, ge=-89.0, le=89.0, allow_inf_nan=False)
     rotation_mode: RotationMode = RotationMode.ORIENT_TO_MOVEMENT
@@ -69,11 +69,19 @@ class MovementTuning(WireModel):
     ground_acceleration: float = Field(gt=0.0)
     braking_deceleration: float = Field(ge=0.0)
     ground_friction: float = Field(ge=0.0)
+    ground_directional_friction: float = Field(ge=0.0)
+    turning_deceleration: float = Field(ge=0.0)
+    pivot_braking_multiplier: float = Field(ge=1.0)
     air_acceleration: float = Field(ge=0.0)
     air_max_speed: float = Field(gt=0.0)
     max_rotation_speed: float = Field(gt=0.0)
     rotation_acceleration: float = Field(gt=0.0)
     rotation_deceleration: float = Field(gt=0.0)
+    walk_acceleration_curve: tuple[tuple[float, float], ...]
+    run_acceleration_curve: tuple[tuple[float, float], ...]
+    sprint_acceleration_curve: tuple[tuple[float, float], ...]
+    braking_curve: tuple[tuple[float, float], ...]
+    turn_speed_curve: tuple[tuple[float, float], ...]
     turn_in_place_threshold: float = Field(gt=0.0, le=180.0)
     pivot_angle_threshold: float = Field(ge=90.0, le=180.0)
     jump_speed: float = Field(gt=0.0)
@@ -89,7 +97,7 @@ class MovementTuning(WireModel):
 class WelcomeMessage(WireModel):
     type: Literal["welcome"] = "welcome"
     session_id: str
-    protocol_version: int = 2
+    protocol_version: int = 3
     tick_rate: int
     snapshot_interval_ticks: int
     movement_tuning: MovementTuning
@@ -134,7 +142,8 @@ class PlayerSnapshot(WireModel):
     ground_contact_point: tuple[float, float, float] | None
     ground_entity: str | None
     movement_mode: str
-    gait: str
+    actual_gait: str
+    requested_gait: str
     character_yaw: float
     desired_facing_yaw: float
     angular_velocity: float

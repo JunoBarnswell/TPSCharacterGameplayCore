@@ -4,15 +4,19 @@ from aster_game.app.config import Settings
 from aster_game.game.components import InputCommand
 from aster_game.game.events import DamageRequest, DamageType
 from aster_game.game.movement.solver import (
+    derive_actual_gait,
+    desired_motion,
     landing_classification,
     solve_horizontal_velocity,
     solve_rotation,
 )
 from aster_game.game.movement.state import (
     ActionLayer,
+    Gait,
     LifeState,
     LocomotionPhase,
     MovementMode,
+    RequestedGait,
 )
 from aster_game.game.movement_system import AirLifecycleSystem
 from aster_game.game.world import GameWorld
@@ -37,16 +41,28 @@ def test_ground_acceleration_and_braking_are_rate_limited() -> None:
             world.queue_input(
                 character.entity_id,
                 InputCommand(
-                    sequence, sequence, 0.0, 1.0, False, True, 0.0, 0.0, "orient_to_movement"
+                    sequence,
+                    sequence,
+                    0.0,
+                    1.0,
+                    False,
+                    RequestedGait.SPRINT,
+                    0.0,
+                    0.0,
+                    "orient_to_movement",
                 ),
             )
             world.tick(world.settings.fixed_dt)
         assert 0.0 < character.movement.horizontal_speed < world.settings.sprint_speed
+        assert character.movement.requested_gait is RequestedGait.SPRINT
+        assert character.movement.actual_gait is not Gait.SPRINT
 
         previous_speed = character.movement.horizontal_speed
         world.queue_input(
             character.entity_id,
-            InputCommand(11, 11, 0.0, 0.0, False, False, 0.0, 0.0, "orient_to_movement"),
+            InputCommand(
+                11, 11, 0.0, 0.0, False, RequestedGait.RUN, 0.0, 0.0, "orient_to_movement"
+            ),
         )
         world.tick(world.settings.fixed_dt)
         assert 0.0 < character.movement.horizontal_speed < previous_speed
@@ -54,13 +70,118 @@ def test_ground_acceleration_and_braking_are_rate_limited() -> None:
             world.queue_input(
                 character.entity_id,
                 InputCommand(
-                    sequence, sequence, 0.0, 0.0, False, False, 0.0, 0.0, "orient_to_movement"
+                    sequence,
+                    sequence,
+                    0.0,
+                    0.0,
+                    False,
+                    RequestedGait.RUN,
+                    0.0,
+                    0.0,
+                    "orient_to_movement",
                 ),
             )
             world.tick(world.settings.fixed_dt)
         assert character.movement.horizontal_speed < 0.1
     finally:
         world.close()
+
+
+def test_requested_gait_is_distinct_from_speed_derived_actual_gait() -> None:
+    world = make_world()
+    try:
+        settings = world.settings
+        desired, _ = desired_motion(
+            0.0,
+            1.0,
+            RequestedGait.SPRINT,
+            0.0,
+            settings.walk_speed,
+            settings.run_speed,
+            settings.sprint_speed,
+        )
+        velocity = (0.0, 0.0)
+        actual_gaits = set()
+        for _ in range(settings.tick_rate * 3):
+            velocity, _ = solve_horizontal_velocity(
+                velocity,
+                (desired[0], desired[2]),
+                settings.fixed_dt,
+                grounded=True,
+                ground_acceleration=settings.ground_acceleration,
+                braking_deceleration=settings.braking_deceleration,
+                ground_friction=settings.ground_friction,
+                air_acceleration=settings.air_acceleration,
+                air_control=settings.air_control,
+                air_max_speed=settings.air_max_speed,
+                ground_directional_friction=settings.ground_directional_friction,
+                turning_deceleration=settings.turning_deceleration,
+                pivot_braking_multiplier=settings.pivot_braking_multiplier,
+                pivot_angle_threshold=settings.pivot_angle_threshold,
+                acceleration_curve=settings.sprint_acceleration_curve,
+                braking_curve=settings.braking_curve,
+                reference_speed=settings.sprint_speed,
+            )
+            actual_gaits.add(
+                derive_actual_gait(
+                    (velocity[0] ** 2 + velocity[1] ** 2) ** 0.5,
+                    settings.walk_speed,
+                    settings.run_speed,
+                    settings.sprint_speed,
+                )
+            )
+
+        assert actual_gaits == {Gait.WALK, Gait.RUN, Gait.SPRINT}
+        assert desired[2] == settings.sprint_speed
+    finally:
+        world.close()
+
+
+def test_directional_friction_and_pivot_braking_preserve_bounded_momentum() -> None:
+    settings = Settings()
+    quarter_turn, _ = solve_horizontal_velocity(
+        (0.0, 6.5),
+        (6.5, 0.0),
+        settings.fixed_dt,
+        grounded=True,
+        ground_acceleration=settings.ground_acceleration,
+        braking_deceleration=settings.braking_deceleration,
+        ground_friction=settings.ground_friction,
+        air_acceleration=settings.air_acceleration,
+        air_control=settings.air_control,
+        air_max_speed=settings.air_max_speed,
+        ground_directional_friction=settings.ground_directional_friction,
+        turning_deceleration=settings.turning_deceleration,
+        pivot_braking_multiplier=settings.pivot_braking_multiplier,
+        pivot_angle_threshold=settings.pivot_angle_threshold,
+        acceleration_curve=settings.run_acceleration_curve,
+        braking_curve=settings.braking_curve,
+        reference_speed=settings.sprint_speed,
+    )
+    pivot, _ = solve_horizontal_velocity(
+        (0.0, 6.5),
+        (0.0, -6.5),
+        settings.fixed_dt,
+        grounded=True,
+        ground_acceleration=settings.ground_acceleration,
+        braking_deceleration=settings.braking_deceleration,
+        ground_friction=settings.ground_friction,
+        air_acceleration=settings.air_acceleration,
+        air_control=settings.air_control,
+        air_max_speed=settings.air_max_speed,
+        ground_directional_friction=settings.ground_directional_friction,
+        turning_deceleration=settings.turning_deceleration,
+        pivot_braking_multiplier=settings.pivot_braking_multiplier,
+        pivot_angle_threshold=settings.pivot_angle_threshold,
+        acceleration_curve=settings.run_acceleration_curve,
+        braking_curve=settings.braking_curve,
+        reference_speed=settings.sprint_speed,
+    )
+    assert quarter_turn[0] > 0.0 and quarter_turn[1] > 6.0
+    assert pivot[1] > 0.0
+    assert (pivot[0] ** 2 + pivot[1] ** 2) ** 0.5 < (
+        quarter_turn[0] ** 2 + quarter_turn[1] ** 2
+    ) ** 0.5
 
 
 def test_air_control_preserves_existing_horizontal_inertia() -> None:
@@ -108,7 +229,9 @@ def test_jump_apex_fall_landing_events_are_ordered() -> None:
         settle(world)
         world.queue_input(
             character.entity_id,
-            InputCommand(1, 1, 0.0, 0.0, True, False, 0.0, 0.0, "orient_to_movement"),
+            InputCommand(
+                1, 1, 0.0, 0.0, True, RequestedGait.RUN, 0.0, 0.0, "orient_to_movement"
+            ),
         )
         events = []
         for _ in range(100):
@@ -159,7 +282,15 @@ def test_hit_reaction_is_an_action_layer_over_locomotion() -> None:
             world.queue_input(
                 character.entity_id,
                 InputCommand(
-                    sequence, sequence, 0.0, 1.0, False, False, 0.0, 0.0, "orient_to_movement"
+                    sequence,
+                    sequence,
+                    0.0,
+                    1.0,
+                    False,
+                    RequestedGait.RUN,
+                    0.0,
+                    0.0,
+                    "orient_to_movement",
                 ),
             )
             world.tick(world.settings.fixed_dt)
@@ -175,7 +306,9 @@ def test_hit_reaction_is_an_action_layer_over_locomotion() -> None:
         )
         world.queue_input(
             character.entity_id,
-            InputCommand(25, 25, 0.0, 1.0, False, False, 0.0, 0.0, "orient_to_movement"),
+            InputCommand(
+                25, 25, 0.0, 1.0, False, RequestedGait.RUN, 0.0, 0.0, "orient_to_movement"
+            ),
         )
         events = world.tick(world.settings.fixed_dt)
         assert character.action_layer is ActionLayer.HIT_REACTION
@@ -195,20 +328,32 @@ def test_pivot_and_turn_in_place_are_derived_from_motion_inputs() -> None:
             world.queue_input(
                 character.entity_id,
                 InputCommand(
-                    sequence, sequence, 0.0, 1.0, False, False, 0.0, 0.0, "orient_to_movement"
+                    sequence,
+                    sequence,
+                    0.0,
+                    1.0,
+                    False,
+                    RequestedGait.RUN,
+                    0.0,
+                    0.0,
+                    "orient_to_movement",
                 ),
             )
             world.tick(world.settings.fixed_dt)
         world.queue_input(
             character.entity_id,
-            InputCommand(45, 45, 0.0, -1.0, False, False, 0.0, 0.0, "orient_to_movement"),
+            InputCommand(
+                45, 45, 0.0, -1.0, False, RequestedGait.RUN, 0.0, 0.0, "orient_to_movement"
+            ),
         )
         world.tick(world.settings.fixed_dt)
         assert character.movement.locomotion_phase is LocomotionPhase.PIVOT
 
         world.queue_input(
             character.entity_id,
-            InputCommand(46, 46, 0.0, 0.0, False, False, 90.0, 0.0, "orient_to_movement"),
+            InputCommand(
+                46, 46, 0.0, 0.0, False, RequestedGait.RUN, 90.0, 0.0, "orient_to_movement"
+            ),
         )
         world.tick(world.settings.fixed_dt)
         assert character.movement.locomotion_phase is LocomotionPhase.TURN_IN_PLACE
