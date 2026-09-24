@@ -12,14 +12,15 @@ export function evaluateAnimationGraph(frame, tuning, blendWeightSmoother, dt) {
   return {
     locomotion: transition,
     aimOffset: aim,
-    hitReaction: frame.actionLayer === "hit_reaction" ? frame.hitStrength : 0,
+    hitReaction: frame.actionChannels.additive_reaction.active ? frame.hitStrength : 0,
     orientationWarp: orientationWarpAngle(frame.worldMovementDirection, frame.characterYaw),
     phase: frame.locomotionPhase,
     phaseProgress: frame.phaseProgress,
+    gaitPhase: frame.gaitPhase,
     turnDirection: frame.turnDirection,
     turnProgress: frame.turnProgress,
     remainingTurnAngle: frame.remainingTurnAngle,
-    actionLayer: frame.actionLayer,
+    actionChannels: frame.actionChannels,
     actionLayers: frame.actionLayers,
   };
 }
@@ -48,12 +49,12 @@ export function evaluatePoseAnimationGraph(frame, tuning, blendWeightSmoother, p
   const resolvedLayers = typeof poseLibrary.layersForFrame === "function"
     ? poseLibrary.layersForFrame(frame)
     : poseLibrary.layers ?? [];
-  const actionLayers = frame.actionLayers.map((action) => {
-    const configured = poseLibrary.actionPoses?.[action];
-    if (!configured) throw new RangeError(`action pose '${action}' is missing`);
+  const actionLayers = frame.actionLayers.map(({ channel, state }) => {
+    const configured = poseLibrary.actionPoses?.[channel]?.[state];
+    if (!configured) throw new RangeError(`action pose '${channel}:${state}' is missing`);
     return {
       ...configured,
-      name: configured.name ?? `action:${action}`,
+      name: configured.name ?? `action:${channel}:${state}`,
     };
   });
   const layers = [...resolvedLayers, ...actionLayers];

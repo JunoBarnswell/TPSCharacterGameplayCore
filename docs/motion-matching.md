@@ -19,17 +19,22 @@ History capacity is bounded and ticks must increase monotonically.
 
 ## Database, search, and transition
 
-`PoseDatabase` validates stable IDs and a fixed feature-vector schema. `PoseSearch` currently performs
-a deterministic brute-force scan and ranks candidates by weighted RMS costs for pose shape, trajectory,
-velocity, facing, and same-pose/same-clip continuity. `MotionMatcher` supplies current pose features,
-retains the current candidate for continuity scoring, and reports the selected pose, clip/time,
-candidate count, cost breakdown, and transition reason.
+`PoseDatabase` validates stable IDs, contact labels, optional clip duration, and a fixed feature-vector
+schema. `PoseSearch` performs a deterministic brute-force scan and ranks candidates by weighted RMS
+costs for pose shape, trajectory, velocity, facing, contacts, and same-pose/same-clip continuity. Each
+feature group is normalized by database variance with a positive scale floor so world-position,
+velocity, and binary contact magnitudes do not dominate solely because of units. `MotionMatcher`
+retains the active candidate for continuity scoring and reports the selected pose, clip/time, candidate
+count, cost breakdown, and transition reason. A minimum clip hold, same-clip phase continuity, and
+switch-cost hysteresis limit rapid clip switching; playback time wraps by clip duration when supplied.
 
-This is an implemented search algorithm, not an asset-backed production matcher. The lab database
-contains seven labeled synthetic poses on a seven-bone rig. The fixture proves that forward, idle,
-turn, and reverse intent can select different candidates from actual pose/trajectory costs. Large
-database indexing, feature normalization from authored datasets, annotation tools, clip playback
-transitions, and animator review are reserved work.
+This is an implemented search algorithm, not an asset-backed production matcher. The lab database is
+generated from a seven-bone synthetic rig with idle, eight-direction walk/run/sprint, pivot, and turn
+samples at two gait phases, including contact labels. The fixture proves that forward, idle, turn, and
+reverse intent can select different candidates from pose, trajectory, and contact costs. Large-database
+indexing, authored-dataset feature validation/scales, annotation tools, actual production clip playback,
+and animator review are reserved work. The lab renderer uses the selected synthetic clip label to
+choose a generated procedural pose target; it does not play an imported animation asset.
 
 ## Root motion and target warping
 
@@ -37,14 +42,16 @@ transitions, and animator review are reserved work.
 root's local orientation. `applyRootMotionDelta` maps that delta through visual character facing and
 does not mutate the authoritative transform. `MotionWarpTarget` names an immutable target transform;
 `warpRootMotionDelta` proportionally allocates translation and yaw endpoint error across the current
-and remaining clip displacement. Tests exercise a synthetic traversal sequence that reaches its
-target. No production traversal clip or Bullet-authoritative root-motion action is supplied.
+and remaining clip displacement inside a smooth action-time window. A windowed target requires a sample
+time; outside the window the warp weight eases to zero. Tests exercise a synthetic traversal sequence
+that reaches its target. The browser preview only activates for a synthetic vault channel. No production
+traversal clip or Bullet-authoritative root-motion action is supplied.
 
 ## Limitations
 
 - Brute force is intentionally simple and is suitable only for a small candidate set.
-- Pose costs use unnormalized physical feature dimensions; production datasets need authored scales,
-  contact labels, and asset validation.
+- Production databases still need authored feature validation, reliable contact labels, and asset
+  validation; fixture-derived normalization is not evidence of production feature quality.
 - The current runtime does not search compressed production animation assets, serialize databases,
   or expose a GPU/renderer pose adapter.
 - Root motion is visual/runtime data. Authoritative gameplay movement still uses the capsule solver.

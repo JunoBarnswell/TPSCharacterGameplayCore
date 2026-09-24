@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from aster_game.game.movement.state import (
-    ActionLayer,
     Gait,
     LifeState,
     LocomotionPhase,
@@ -30,33 +29,63 @@ class RespawnSystem:
 class StateSystem:
     """Updates orthogonal action/life channels and emits channel-change events."""
 
+    _stride_lengths = {
+        Gait.WALK: 1.35,
+        Gait.RUN: 2.25,
+        Gait.SPRINT: 3.1,
+    }
+
     def update(self, world: GameWorld, dt: float) -> None:
         for character in world.characters.values():
             movement = character.movement
+            channels = character.action_channels
             if character.life_state is LifeState.DEAD:
-                character.action_layer = ActionLayer.DEATH
                 movement.movement_mode = MovementMode.DISABLED
                 movement.actual_gait = Gait.IDLE
                 movement.locomotion_phase = LocomotionPhase.IDLE
                 movement.phase_start_tick = world.tick_id
                 movement.phase_duration_ticks = 0
                 movement.turn_direction = "none"
-            elif world.tick_id >= character.action_until_tick and character.action_layer in {
-                ActionLayer.ATTACK,
-                ActionLayer.HIT_REACTION,
-            }:
-                character.action_layer = ActionLayer.NONE
+            stride_length = self._stride_lengths.get(movement.actual_gait)
+            if (
+                character.life_state is LifeState.ALIVE
+                and movement.grounded
+                and movement.ground_contact_confirmed
+                and stride_length is not None
+            ):
+                movement.gait_phase = (
+                    movement.gait_phase + movement.horizontal_speed * dt / stride_length
+                ) % 1.0
+            for channel in (
+                channels.upper_body_action,
+                channels.additive_reaction,
+                channels.full_body_override,
+            ):
+                if (
+                    channel.active
+                    and channel.end_tick is not None
+                    and world.tick_id >= channel.end_tick
+                ):
+                    channel.deactivate(world.tick_id)
+            if not channels.additive_reaction.active:
                 character.hit_direction = None
                 character.hit_region = None
                 character.hit_strength = 0.0
                 character.hit_source_position = None
+
+            channels.update_locomotion(movement, world.tick_id)
+            active_channels = tuple(
+                f"{channel.channel}:{channel.state}"
+                for channel in channels.ordered()
+                if channel.active
+            )
 
             channels = (
                 movement.movement_mode.value,
                 movement.actual_gait.value,
                 movement.locomotion_phase.value,
                 movement.rotation_mode.value,
-                character.action_layer.value,
+                *active_channels,
                 character.life_state.value,
             )
             if channels != character.previous_channels:

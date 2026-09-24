@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 from importlib.resources import files
 from json import loads
-from math import cos, hypot, radians
 
 from panda3d.bullet import (
     BulletBoxShape,
@@ -200,16 +199,37 @@ class PhysicsWorld:
         self,
         start: tuple[float, float, float],
         end: tuple[float, float, float],
+        *,
+        ignore_node_name: str | None = None,
     ) -> SweepHit | None:
         start_transform = TransformState.makePos(Point3(*start))
         end_transform = TransformState.makePos(Point3(*end))
-        result = self.world.sweepTestClosest(
-            self._projectile_shape,
-            start_transform,
-            end_transform,
-            BitMask32.allOn(),
-            0.0,
+        ignored_controller = next(
+            (
+                controller
+                for controller in self.world.getCharacters()
+                if controller.getName() == ignore_node_name
+            ),
+            None,
         )
+        previous_mask = (
+            ignored_controller.getIntoCollideMask() if ignored_controller is not None else None
+        )
+        try:
+            # Bullet exposes only the closest-hit sweep query. Temporarily removing the
+            # owner's into mask lets the same sweep continue to the next real obstacle.
+            if ignored_controller is not None:
+                ignored_controller.setIntoCollideMask(BitMask32.allOff())
+            result = self.world.sweepTestClosest(
+                self._projectile_shape,
+                start_transform,
+                end_transform,
+                BitMask32.allOn(),
+                0.0,
+            )
+        finally:
+            if ignored_controller is not None and previous_mask is not None:
+                ignored_controller.setIntoCollideMask(previous_mask)
         if not result.hasHit():
             return None
         hit_pos = result.getHitPos()
@@ -292,51 +312,6 @@ class PhysicsWorld:
                 )
             )
         return tuple(hits)
-
-    def find_step_up_target(
-        self,
-        current_position: tuple[float, float, float],
-        proposed_position: tuple[float, float, float],
-        current_floor_y: float,
-    ) -> tuple[tuple[float, float, float], GroundProbeHit] | None:
-        if self.settings.character_step_height <= 0.0:
-            return None
-        delta_x = proposed_position[0] - current_position[0]
-        delta_z = proposed_position[2] - current_position[2]
-        horizontal_distance = hypot(delta_x, delta_z)
-        if horizontal_distance <= 1e-6:
-            return None
-        step_forward = self.settings.character_radius + self.settings.ground_probe_radius
-        target_x = proposed_position[0] + delta_x / horizontal_distance * step_forward
-        target_z = proposed_position[2] + delta_z / horizontal_distance * step_forward
-        half_height = self.settings.character_radius + self.settings.character_cylinder_height / 2.0
-        target_position = (
-            target_x,
-            proposed_position[1] + self.settings.character_step_height,
-            target_z,
-        )
-        minimum_normal_y = cos(radians(self.settings.max_walkable_slope))
-        candidates = [
-            sample
-            for sample in self.probe_ground(target_position)
-            if sample.distance >= -self.settings.ground_probe_radius
-            and sample.distance <= self.settings.ground_snap_distance
-            and sample.normal[1] >= minimum_normal_y
-        ]
-        if not candidates:
-            return None
-        support = max(candidates, key=lambda sample: sample.position[1])
-        rise = support.position[1] - current_floor_y
-        if rise <= 0.02 or rise > self.settings.character_step_height + 0.02:
-            return None
-        return (
-            (
-                target_x,
-                support.position[1] + half_height,
-                target_z,
-            ),
-            support,
-        )
 
     def close(self) -> None:
         for controller in list(self.world.getCharacters()):

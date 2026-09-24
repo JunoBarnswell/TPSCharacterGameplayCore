@@ -24,19 +24,23 @@ do not emulate kernel/network queue behavior or loss of the underlying WebSocket
 
 The page runs trajectory prediction through the collision-aware solver and shows the five future
 samples and rollout time. A seven-bone synthetic rig runs distributed orientation warp, bounded foot
-IK against deterministic synthetic probes, visual root offset, local root-motion extraction, and a
-synthetic target-warp preview. The live Pose History shows bounded sample count and critical bones.
+IK and world-space locks against static floor/box/ramp support probes, visual root offset, local
+root-motion extraction, and a target-warp preview limited to the synthetic vault action window. The
+live Pose History shows bounded sample count and critical bones.
 
-The synthetic Pose Database has seven named candidates. The page reports current semantic candidate,
-selected clip/time/pose ID, candidate count, total and component costs, transition reason, and search
-time. IK, warp, search, graph, and trajectory timings use `performance.now()` and are diagnostic
+The synthetic Pose Database generates idle, eight-direction walk/run/sprint, pivot, and turn samples
+at gait phases with contact labels. The page reports current semantic candidate, selected
+clip/time/pose ID, candidate count, total and component costs, transition reason, and search time.
+ACK history overflow and hard-resync reason/count are visible alongside nullable reconciliation
+errors. IK, warp, search, graph, and trajectory timings use `performance.now()` and are diagnostic
 samples, not benchmark percentiles.
 
 ## Production boundary
 
 The lab does not contain a WebGL renderer, skinning, authored animation clips, renderer raycasts, or a
-production character rig. Its synthetic foot contacts and database validate algorithms and observability
-only. Python phase timings and full-test results are separate server-side evidence. Performance
+production character rig. Its collision-profile foot supports and synthetic pose database validate
+algorithms and observability only. Python phase timings and full-test results are separate server-side
+evidence. Performance
 percentiles should be collected with a reproducible player/room workload before claiming a production
 capacity target. The checked-in tests verify a 16-player room's fixed-tick rate; the local 16-WebSocket
 load run is a development-machine sample, not a production-host capacity benchmark.

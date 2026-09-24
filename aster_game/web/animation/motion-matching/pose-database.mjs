@@ -16,7 +16,7 @@ function freezeFeatures(features) {
     throw new RangeError("pose database feature vector must match its structured features");
   }
   const fieldNames = [
-    "rootVelocity", "facing", "pelvisPosition", "pelvisVelocity",
+    "rootVelocity", "facing", "contacts", "pelvisPosition", "pelvisVelocity",
     "leftFootPosition", "rightFootPosition", "leftFootVelocity", "rightFootVelocity",
   ];
   const frozen = {};
@@ -24,6 +24,10 @@ function freezeFeatures(features) {
     const value = features[name];
     if (!Array.isArray(value) || !value.every(Number.isFinite)) {
       throw new TypeError(`pose database feature '${name}' must be a finite vector`);
+    }
+    if (name === "contacts" &&
+        (value.length !== 2 || value.some((contact) => contact < 0 || contact > 1))) {
+      throw new RangeError("pose database foot contacts must contain two weights in [0, 1]");
     }
     frozen[name] = Object.freeze([...value]);
   }
@@ -64,6 +68,12 @@ export class PoseDatabase {
       throw new TypeError("pose database entry requires id, clip name, and finite clip time");
     }
     if (this.ids.has(candidate.id)) throw new RangeError(`duplicate pose database id '${candidate.id}'`);
+    const clipDurationSeconds = candidate.metadata?.durationSeconds;
+    if (clipDurationSeconds !== undefined &&
+        (!(clipDurationSeconds > 0) || !Number.isFinite(clipDurationSeconds) ||
+         candidate.timeSeconds >= clipDurationSeconds)) {
+      throw new RangeError("pose database clip duration must contain the sample time");
+    }
     if (this.skeleton !== null && candidate.pose.skeleton !== this.skeleton) {
       throw new TypeError("pose database entries must use one skeleton instance");
     }

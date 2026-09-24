@@ -1,6 +1,6 @@
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
 from aster_game.game.movement.state import RequestedGait, RotationMode
 
@@ -133,7 +133,7 @@ class CollisionWorldProfile(WireModel):
 class WelcomeMessage(WireModel):
     type: Literal["welcome"] = "welcome"
     session_id: str
-    protocol_version: int = 6
+    protocol_version: int = 7
     tick_rate: int
     snapshot_interval_ticks: int
     movement_tuning: MovementTuning
@@ -159,6 +159,36 @@ class PongMessage(WireModel):
     nonce: int | str | None = None
 
 
+class AnimationChannelSnapshot(WireModel):
+    state: str = Field(min_length=1, max_length=64)
+    active: bool
+    start_tick: int = Field(ge=0)
+    end_tick: int | None = Field(ge=0)
+    sequence: int = Field(ge=0)
+    event_id: str = Field(max_length=96)
+    blend_semantic: Literal[
+        "none", "loop", "transition", "masked_override", "additive", "life_override"
+    ]
+
+    @model_validator(mode="after")
+    def validate_channel_revision(self) -> "AnimationChannelSnapshot":
+        if self.end_tick is not None and self.end_tick < self.start_tick:
+            raise ValueError("animation channel end_tick must not precede start_tick")
+        if self.active and (self.state == "none" or self.blend_semantic == "none"):
+            raise ValueError("active animation channel requires an active state and blend semantic")
+        if not self.active and (self.state != "none" or self.blend_semantic != "none"):
+            raise ValueError("inactive animation channel must use the none state and semantic")
+        return self
+
+
+class CharacterActionChannelsSnapshot(WireModel):
+    locomotion: AnimationChannelSnapshot
+    upper_body_action: AnimationChannelSnapshot
+    additive_reaction: AnimationChannelSnapshot
+    full_body_override: AnimationChannelSnapshot
+    life_override: AnimationChannelSnapshot
+
+
 class RemotePlayerSnapshot(WireModel):
     entity_id: int
     player_id: str
@@ -176,6 +206,7 @@ class RemotePlayerSnapshot(WireModel):
     walkable_floor: bool
     movement_mode: str
     actual_gait: str
+    gait_phase: float = Field(ge=0.0, lt=1.0)
     character_yaw: float
     desired_facing_yaw: float
     angular_velocity: float
@@ -192,7 +223,7 @@ class RemotePlayerSnapshot(WireModel):
     remaining_turn_angle: float
     turn_progress: float = Field(ge=0.0, le=1.0)
     landing_impact_velocity: float
-    action_layer: str
+    action_channels: CharacterActionChannelsSnapshot
     life_state: str
     hit_direction: tuple[float, float, float] | None
     hit_region: str | None
@@ -206,6 +237,7 @@ class OwnerPlayerSnapshot(RemotePlayerSnapshot):
 
     current_speed: float
     ground_contact_confirmed: bool
+    last_grounded_tick: int = -1
     ground_sample_count: int
     blocked_move_ticks: int = Field(ge=0)
     slope_angle: float

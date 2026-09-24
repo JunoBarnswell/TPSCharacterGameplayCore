@@ -8,7 +8,7 @@ from panda3d.core import Vec3
 from aster_game.game.aim_ray import AimRay
 from aster_game.game.components import Projectile
 from aster_game.game.events import DamageRequest, DamageType, ResolvedDamage
-from aster_game.game.movement.state import ActionLayer, LifeState, MovementMode
+from aster_game.game.movement.state import LifeState, MovementMode
 
 if TYPE_CHECKING:
     from aster_game.game.world import GameWorld
@@ -45,7 +45,9 @@ class AttackSystem:
                 world.settings.character_radius + world.settings.projectile_radius + 0.18
             )
             position = character.transform.position
-            facing_yaw = radians(movement.character_yaw)
+            # Weapon orientation follows the validated view ray accepted this tick.
+            # Character rotation may still be catching up during a fast turn.
+            facing_yaw = radians(movement.view_yaw)
             origin = (
                 position[0] + sin(facing_yaw) * muzzle_distance,
                 position[1] + world.settings.weapon_muzzle_height,
@@ -66,14 +68,21 @@ class AttackSystem:
             world.next_projectile_id += 1
             world.projectiles[projectile.projectile_id] = projectile
             character.attack_ready_tick = world.tick_id + cooldown_ticks
-            character.action_layer = ActionLayer.ATTACK
-            character.action_until_tick = world.tick_id + max(1, world.settings.tick_rate // 6)
+            action = character.action_channels.upper_body_action
+            action.activate(
+                "shoot",
+                world.tick_id,
+                world.tick_id + max(1, world.settings.tick_rate // 6),
+                "masked_override",
+            )
             world.publish(
                 "attack_fired",
                 entity_id=entity_id,
                 projectile_id=projectile.projectile_id,
                 position=origin,
                 aim_direction=direction,
+                action_sequence=action.sequence,
+                action_event_id=action.event_id,
             )
         world.attack_requests.clear()
 
@@ -85,7 +94,14 @@ class ProjectileSystem:
             start = projectile.position
             end = tuple(start[i] + projectile.velocity[i] * dt for i in range(3))
             step_distance = sum((end[i] - start[i]) ** 2 for i in range(3)) ** 0.5
-            hit = world.physics.sweep_projectile(start, end)
+            owner = world.characters.get(projectile.owner_entity_id)
+            hit = world.physics.sweep_projectile(
+                start,
+                end,
+                ignore_node_name=(
+                    owner.physics.controller.getName() if owner is not None else None
+                ),
+            )
             if hit is not None:
                 target_id = world.entity_id_from_physics_name(hit.node_name)
                 if target_id is not None and target_id != projectile.owner_entity_id:
@@ -152,8 +168,14 @@ class DamageSystem:
             target.hit_region = request.hit_region or "body"
             target.hit_strength = min(1.0, applied / target.health.max_health)
             target.hit_source_position = request.hit_source_position
-            target.action_layer = ActionLayer.HIT_REACTION
-            target.action_until_tick = world.tick_id + max(1, world.settings.tick_rate // 5)
+            reaction = target.action_channels.additive_reaction
+            duration_ticks = max(1, world.settings.tick_rate // 5)
+            reaction.activate(
+                "hit_reaction",
+                world.tick_id,
+                world.tick_id + duration_ticks,
+                "additive",
+            )
             side = self._hit_side(target.movement.character_yaw, request.hit_direction)
             world.publish(
                 "hit_reaction",
@@ -163,7 +185,9 @@ class DamageSystem:
                 hit_region=target.hit_region,
                 hit_strength=target.hit_strength,
                 source_position=request.hit_source_position,
-                duration_ticks=max(1, world.settings.tick_rate // 5),
+                duration_ticks=duration_ticks,
+                action_sequence=reaction.sequence,
+                action_event_id=reaction.event_id,
             )
 
     @staticmethod
@@ -220,7 +244,12 @@ class DeathSystem:
             if target is None or target.life_state is LifeState.DEAD:
                 continue
             target.life_state = LifeState.DEAD
-            target.action_layer = ActionLayer.DEATH
+            target.action_channels.life_override.activate(
+                "death",
+                world.tick_id,
+                None,
+                "life_override",
+            )
             target.movement.velocity = (0.0, 0.0, 0.0)
             target.movement.acceleration = (0.0, 0.0, 0.0)
             target.movement.desired_velocity = (0.0, 0.0, 0.0)
@@ -237,4 +266,6 @@ class DeathSystem:
                 killer_id=request.source_entity_id,
                 damage_type=request.damage_type.value,
                 tick=world.tick_id,
+                action_sequence=target.action_channels.life_override.sequence,
+                action_event_id=target.action_channels.life_override.event_id,
             )

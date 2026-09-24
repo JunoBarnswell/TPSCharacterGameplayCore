@@ -26,6 +26,7 @@ export function evaluateResponseCurve(points, value) {
 const defaultAccelerationCurve = [[0, 1.35], [0.5, 1], [1, 0.65]];
 const defaultBrakingCurve = [[0, 0.6], [0.35, 1], [1, 1.35]];
 const defaultTurnSpeedCurve = [[0, 0.22], [0.25, 0.55], [1, 1]];
+const gaitStrideLengths = Object.freeze({ walk: 1.35, run: 2.25, sprint: 3.1 });
 
 export function desiredMotion(input, tuning) {
   const axisLength = Math.hypot(input.move_x, input.move_z);
@@ -204,6 +205,7 @@ export function predictMovementStep(state, input, tuning, dt, collisionWorld = n
   );
   const simulationTick = Number(state.simulation_tick ?? state.server_tick ?? 0);
   const jumpPressed = input.jump && !state.jump_held && grounded &&
+    state.ground_contact_confirmed !== false && state.walkable_floor !== false &&
     simulationTick >= Number(state.jump_available_tick ?? 0);
   let vy = state.velocity[1];
   let y = state.position[1];
@@ -335,6 +337,12 @@ export function predictMovementStep(state, input, tuning, dt, collisionWorld = n
   }
   const rotation = solveRotation(state.character_yaw, state.angular_velocity, desiredFacing, dt, tuning);
   const turnRemaining = phase === "turn_in_place" ? angleDelta(desiredFacing, rotation.yaw) : 0;
+  const actualGait = deriveActualGait(Math.hypot(velocity[0], velocity[2]), tuning);
+  const gaitPhase = nextGrounded && actualGait !== "idle" &&
+    collision?.ground_contact_confirmed !== false
+    ? ((Number(state.gait_phase ?? 0) + Math.hypot(velocity[0], velocity[2]) * dt /
+      (gaitStrideLengths[actualGait] ?? gaitStrideLengths.run)) % 1 + 1) % 1
+    : Number(state.gait_phase ?? 0);
   const phaseProgress = phaseDurationTicks > 0
     ? Math.max(0, Math.min(1, (simulationTick - phaseStartTick) / phaseDurationTicks))
     : 0;
@@ -367,13 +375,17 @@ export function predictMovementStep(state, input, tuning, dt, collisionWorld = n
     walkable_floor: collision?.walkable_floor ?? state.walkable_floor ?? true,
     ground_contact_confirmed: collision?.ground_contact_confirmed ??
       state.ground_contact_confirmed ?? nextGrounded,
+    last_grounded_tick: collision?.last_grounded_tick ?? state.last_grounded_tick ??
+      (state.ground_contact_confirmed ? simulationTick : -1),
+    ground_grace_active: collision?.ground_grace_active ?? false,
     ground_contact_point: collision?.ground_contact_point ?? state.ground_contact_point ?? null,
     ground_entity: collision?.ground_entity ?? state.ground_entity ?? null,
     ground_sample_count: collision?.ground_sample_count ?? state.ground_sample_count ?? 0,
     slope_angle: collision?.slope_angle ?? state.slope_angle ?? 0,
     blocked_move_ticks: collision?.blocked_move_ticks ?? state.blocked_move_ticks ?? 0,
     step_up: Boolean(collision?.step_up),
-    actual_gait: deriveActualGait(Math.hypot(solved.velocity[0], solved.velocity[2]), tuning),
+    actual_gait: deriveActualGait(Math.hypot(velocity[0], velocity[2]), tuning),
+    gait_phase: gaitPhase,
     requested_gait: desired.requestedGait,
     rotation_mode: input.rotation_mode,
     locomotion_phase: phase,

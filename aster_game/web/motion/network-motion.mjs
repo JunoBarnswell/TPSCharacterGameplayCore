@@ -1,10 +1,68 @@
 import { angleDelta, predictMovementStep } from "./movement-solver.mjs";
 
+export class FixedStepScheduler {
+  constructor(tickRate = 60, maxCatchUpSteps = 4) {
+    if (!Number.isFinite(tickRate) || tickRate <= 0 ||
+        !Number.isInteger(maxCatchUpSteps) || maxCatchUpSteps < 1) {
+      throw new RangeError("fixed-step scheduler requires a positive rate and catch-up limit");
+    }
+    this.maxCatchUpSteps = maxCatchUpSteps;
+    this.setTickRate(tickRate);
+    this.reset();
+  }
+
+  setTickRate(tickRate) {
+    if (!Number.isFinite(tickRate) || tickRate <= 0) {
+      throw new RangeError("fixed-step scheduler tick rate must be positive");
+    }
+    this.stepMilliseconds = 1000 / tickRate;
+    this.accumulatorMilliseconds = 0;
+    this.lastTimeMilliseconds = null;
+  }
+
+  reset(nowMilliseconds = null) {
+    if (nowMilliseconds !== null && !Number.isFinite(nowMilliseconds)) {
+      throw new TypeError("fixed-step scheduler reset time must be finite");
+    }
+    this.accumulatorMilliseconds = 0;
+    this.lastTimeMilliseconds = nowMilliseconds;
+  }
+
+  advance(nowMilliseconds) {
+    if (!Number.isFinite(nowMilliseconds)) {
+      throw new TypeError("fixed-step scheduler time must be finite");
+    }
+    if (this.lastTimeMilliseconds === null || nowMilliseconds < this.lastTimeMilliseconds) {
+      this.reset(nowMilliseconds);
+      return [];
+    }
+    const elapsed = nowMilliseconds - this.lastTimeMilliseconds;
+    this.lastTimeMilliseconds = nowMilliseconds;
+    this.accumulatorMilliseconds = Math.min(
+      this.accumulatorMilliseconds + elapsed,
+      this.stepMilliseconds * this.maxCatchUpSteps,
+    );
+    const scheduledTimes = [];
+    while (this.accumulatorMilliseconds + 1e-6 >= this.stepMilliseconds &&
+        scheduledTimes.length < this.maxCatchUpSteps) {
+      this.accumulatorMilliseconds -= this.stepMilliseconds;
+      scheduledTimes.push(nowMilliseconds - this.accumulatorMilliseconds);
+    }
+    return scheduledTimes;
+  }
+}
+
 export class PredictionHistory {
   constructor(limit = 256, largeCorrectionThreshold = 0.5) {
+    if (!Number.isInteger(limit) || limit < 1 || !Number.isFinite(largeCorrectionThreshold) ||
+        largeCorrectionThreshold < 0) {
+      throw new RangeError("prediction history requires a positive limit and correction threshold");
+    }
     this.limit = limit;
     this.largeCorrectionThreshold = largeCorrectionThreshold;
     this.state = null;
+    this.baseState = null;
+    this.baseSequence = null;
     this.inputs = [];
     this.metrics = {
       position_error: 0,
@@ -12,6 +70,12 @@ export class PredictionHistory {
       velocity_error: 0,
       reconciliation_count: 0,
       large_correction_count: 0,
+      correction_position_error: 0,
+      history_overflow_count: 0,
+      hard_resync_count: 0,
+      discarded_input_count: 0,
+      stale_ack_count: 0,
+      last_resync_reason: null,
     };
   }
 
@@ -21,6 +85,8 @@ export class PredictionHistory {
       position: [...authoritative.position],
       velocity: [...authoritative.velocity],
     };
+    this.baseState = structuredClone(this.state);
+    this.baseSequence = Number(authoritative.last_processed_input ?? -1);
     this.inputs = [];
     this.metrics = {
       position_error: 0,
@@ -28,45 +94,122 @@ export class PredictionHistory {
       velocity_error: 0,
       reconciliation_count: 0,
       large_correction_count: 0,
+      correction_position_error: 0,
+      history_overflow_count: 0,
+      hard_resync_count: 0,
+      discarded_input_count: 0,
+      stale_ack_count: 0,
+      last_resync_reason: null,
     };
+    this.lastAckSequence = Number(authoritative.last_processed_input ?? -1);
   }
 
   predict(input, tuning, dt, collisionWorld = null) {
     if (!this.state) return null;
+    if (!input || !Number.isSafeInteger(input.sequence) || input.sequence < 0) {
+      throw new TypeError("predicted input requires a non-negative safe sequence number");
+    }
+    const previousSequence = this.inputs.at(-1)?.input.sequence ?? this.baseSequence;
+    if (previousSequence !== null && input.sequence <= previousSequence) {
+      throw new RangeError("predicted input sequences must increase strictly");
+    }
     this.state = predictMovementStep(this.state, input, tuning, dt, collisionWorld);
     this.inputs.push({ input: { ...input }, state: structuredClone(this.state), sentAt: input.sentAt });
-    if (this.inputs.length > this.limit) this.inputs.shift();
+    if (this.inputs.length > this.limit) {
+      const evicted = this.inputs.shift();
+      this.baseState = evicted.state;
+      this.baseSequence = Number(evicted.input.sequence);
+      this.metrics.history_overflow_count++;
+    }
     return this.state;
   }
 
   reconcile(authoritative, ack, tuning, dt, collisionWorld = null) {
+    if (!Number.isSafeInteger(ack) || ack < -1 || !authoritative ||
+        !Array.isArray(authoritative.position) || authoritative.position.length !== 3 ||
+        !authoritative.position.every(Number.isFinite) || !Array.isArray(authoritative.velocity) ||
+        authoritative.velocity.length !== 3 || !authoritative.velocity.every(Number.isFinite)) {
+      throw new TypeError("prediction reconciliation requires a valid ACK and authoritative transform");
+    }
     if (!this.state || !authoritative) {
       this.reset(authoritative);
       return this.state;
     }
-    const positionDifference = this.state.position.map(
-      (value, axis) => value - authoritative.position[axis],
-    );
-    const velocityDifference = this.state.velocity.map(
-      (value, axis) => value - authoritative.velocity[axis],
-    );
-    const positionError = Math.hypot(...positionDifference);
-    this.metrics.position_error = positionError;
-    this.metrics.rotation_error = Math.abs(
-      angleDelta(this.state.character_yaw, authoritative.character_yaw),
-    );
-    this.metrics.velocity_error = Math.hypot(...velocityDifference);
+    if (ack < this.lastAckSequence) {
+      this.metrics.stale_ack_count++;
+      return this.state;
+    }
+    const latestPredictedSequence = this.inputs.at(-1)?.input.sequence ?? this.baseSequence;
+    if (latestPredictedSequence !== null && ack > latestPredictedSequence) {
+      throw new RangeError("authoritative ACK cannot exceed the latest predicted input sequence");
+    }
     this.metrics.reconciliation_count++;
-    if (positionError > this.largeCorrectionThreshold) this.metrics.large_correction_count++;
+    const predictedAtAck = ack === this.baseSequence
+      ? this.baseState
+      : this.inputs.find(({ input }) => input.sequence === ack)?.state ?? null;
+    if (predictedAtAck) {
+      this.metrics.position_error = Math.hypot(
+        ...predictedAtAck.position.map((value, axis) => value - authoritative.position[axis]),
+      );
+      this.metrics.rotation_error = Math.abs(
+        angleDelta(predictedAtAck.character_yaw, authoritative.character_yaw),
+      );
+      this.metrics.velocity_error = Math.hypot(
+        ...predictedAtAck.velocity.map((value, axis) => value - authoritative.velocity[axis]),
+      );
+    } else {
+      this.metrics.position_error = null;
+      this.metrics.rotation_error = null;
+      this.metrics.velocity_error = null;
+    }
+
+    const beforeReplay = this.state;
+    const historyHasGap = predictedAtAck === null || ack < this.baseSequence;
+    if (historyHasGap) {
+      this.metrics.hard_resync_count++;
+      this.metrics.last_resync_reason = ack < this.baseSequence
+        ? "prediction_history_overflow"
+        : "ack_state_unavailable";
+      this.metrics.discarded_input_count += Math.max(0, this.baseSequence - ack);
+      this.metrics.discarded_input_count += this.inputs.filter(
+        ({ input }) => input.sequence > ack,
+      ).length;
+      this.inputs = [];
+      this.state = {
+        ...authoritative,
+        position: [...authoritative.position],
+        velocity: [...authoritative.velocity],
+      };
+      this.baseState = structuredClone(this.state);
+      this.baseSequence = ack;
+      this.lastAckSequence = ack;
+      this.metrics.correction_position_error = Math.hypot(
+        ...beforeReplay.position.map((value, axis) => value - this.state.position[axis]),
+      );
+      if (this.metrics.correction_position_error > this.largeCorrectionThreshold) {
+        this.metrics.large_correction_count++;
+      }
+      return this.state;
+    }
+
     this.inputs = this.inputs.filter(({ input }) => input.sequence > ack);
     this.state = {
       ...authoritative,
       position: [...authoritative.position],
       velocity: [...authoritative.velocity],
     };
+    this.baseState = structuredClone(this.state);
+    this.baseSequence = ack;
+    this.lastAckSequence = ack;
     for (const entry of this.inputs) {
       this.state = predictMovementStep(this.state, entry.input, tuning, dt, collisionWorld);
       entry.state = structuredClone(this.state);
+    }
+    this.metrics.correction_position_error = Math.hypot(
+      ...beforeReplay.position.map((value, axis) => value - this.state.position[axis]),
+    );
+    if (this.metrics.correction_position_error > this.largeCorrectionThreshold) {
+      this.metrics.large_correction_count++;
     }
     return this.state;
   }
@@ -150,53 +293,134 @@ function hermite(p0, v0, p1, v1, t, duration) {
     h00 * value + h10 * duration * v0[index] + h01 * p1[index] + h11 * duration * v1[index]);
 }
 
+function hermiteVelocity(p0, v0, p1, v1, t, duration) {
+  const t2 = t * t;
+  const dh00 = 6 * t2 - 6 * t;
+  const dh10 = 3 * t2 - 4 * t + 1;
+  const dh01 = -6 * t2 + 6 * t;
+  const dh11 = 3 * t2 - 2 * t;
+  return p0.map((value, index) =>
+    (dh00 * value + dh10 * duration * v0[index] + dh01 * p1[index] +
+      dh11 * duration * v1[index]) / duration);
+}
+
 function boundedHermite(p0, v0, p1, v1, alpha, duration, maxVisualVelocity) {
   const chord = p1.map((value, index) => value - p0[index]);
   const chordLength = Math.hypot(...chord);
   if (chordLength <= 1e-5 || duration <= 0) {
     return { position: p0.map((value, index) => value + chord[index] * alpha), mode: "linear-stop" };
   }
-  const direction = chord.map((value) => value / chordLength);
-  const maxTangent = Math.min(maxVisualVelocity, 3 * chordLength / duration);
   const clampTangent = (velocity) => {
-    const along = velocity.reduce((sum, value, index) => sum + value * direction[index], 0);
-    const magnitude = Math.max(0, Math.min(maxTangent, along));
-    return direction.map((value) => value * magnitude);
+    const magnitude = Math.hypot(...velocity);
+    const scale = magnitude > maxVisualVelocity ? maxVisualVelocity / magnitude : 1;
+    return velocity.map((value) => value * scale);
   };
-  const candidate = hermite(p0, clampTangent(v0), p1, clampTangent(v1), alpha, duration);
   const epsilon = 1e-5;
-  const outsideSegment = candidate.some((value, index) =>
-    value < Math.min(p0[index], p1[index]) - epsilon ||
-    value > Math.max(p0[index], p1[index]) + epsilon);
-  if (outsideSegment) {
-    return { position: p0.map((value, index) => value + chord[index] * alpha), mode: "linear-overshoot" };
+  const tangent0 = clampTangent(v0);
+  const tangent1 = clampTangent(v1);
+  const satisfiesBounds = (scale) => {
+    const scaled0 = tangent0.map((value) => value * scale);
+    const scaled1 = tangent1.map((value) => value * scale);
+    for (const t of [0, 0.25, 0.5, 0.75, 1]) {
+      const candidate = hermite(p0, scaled0, p1, scaled1, t, duration);
+      const velocity = hermiteVelocity(p0, scaled0, p1, scaled1, t, duration);
+      if (Math.hypot(...velocity) > maxVisualVelocity + epsilon) return false;
+      const elapsed = duration * t;
+      const remaining = duration * (1 - t);
+      if (Math.hypot(...candidate.map((value, axis) => value - p0[axis])) >
+            maxVisualVelocity * elapsed + epsilon ||
+          Math.hypot(...candidate.map((value, axis) => value - p1[axis])) >
+            maxVisualVelocity * remaining + epsilon) return false;
+      if (chordLength > epsilon) {
+        const progress = candidate.reduce(
+          (sum, value, axis) => sum + (value - p0[axis]) * chord[axis], 0,
+        ) / (chordLength * chordLength);
+        const chordVelocity = velocity.reduce(
+          (sum, value, axis) => sum + value * chord[axis], 0,
+        );
+        if (progress < -epsilon || progress > 1 + epsilon || chordVelocity < -epsilon) return false;
+      }
+    }
+    return true;
+  };
+  let scale = 1;
+  if (!satisfiesBounds(scale)) {
+    if (!satisfiesBounds(0)) {
+      return {
+        position: p0.map((value, index) => value + chord[index] * alpha),
+        mode: "linear-speed-bound",
+      };
+    }
+    let lower = 0;
+    let upper = 1;
+    for (let iteration = 0; iteration < 16; iteration++) {
+      const middle = (lower + upper) / 2;
+      if (satisfiesBounds(middle)) lower = middle;
+      else upper = middle;
+    }
+    scale = lower;
   }
-  const elapsed = duration * alpha;
-  const remaining = duration * (1 - alpha);
-  const fromStart = Math.hypot(...candidate.map((value, index) => value - p0[index]));
-  const toEnd = Math.hypot(...candidate.map((value, index) => value - p1[index]));
-  if (fromStart > maxVisualVelocity * elapsed + epsilon ||
-      toEnd > maxVisualVelocity * remaining + epsilon) {
-    return { position: p0.map((value, index) => value + chord[index] * alpha), mode: "linear-speed-bound" };
+  const candidate = hermite(
+    p0,
+    tangent0.map((value) => value * scale),
+    p1,
+    tangent1.map((value) => value * scale),
+    alpha,
+    duration,
+  );
+  return { position: candidate, mode: scale < 1 ? "hermite-tangent-limited" : "hermite" };
+}
+
+function boundedYawHermite(yaw0, yawRate0, yaw1, yawRate1, alpha, duration, maxYawRate) {
+  const delta = angleDelta(yaw1, yaw0);
+  if (Math.abs(delta) <= 1e-8 || duration <= 0) return normalizeDegrees(yaw0 + delta * alpha);
+  const secant = delta / duration;
+  const tangent = (rate) => {
+    const bounded = Math.max(-maxYawRate, Math.min(maxYawRate, rate));
+    return bounded * secant < 0 ? 0 : bounded;
+  };
+  let m0 = tangent(yawRate0);
+  let m1 = tangent(yawRate1);
+  const a = m0 / secant;
+  const b = m1 / secant;
+  const sum = a * a + b * b;
+  if (sum > 9) {
+    const scale = 3 / Math.sqrt(sum);
+    m0 *= scale;
+    m1 *= scale;
   }
-  return { position: candidate, mode: "hermite" };
+  const unwrapped = hermite([yaw0], [m0], [yaw0 + delta], [m1], alpha, duration)[0];
+  return normalizeDegrees(unwrapped);
 }
 
 export class RemoteSnapshotBuffer {
-  constructor(maxSamples = 32, teleportThreshold = 10, { maxVisualVelocity = 16 } = {}) {
+  constructor(maxSamples = 32, teleportThreshold = 10, {
+    maxVisualVelocity = 16,
+    maxVisualYawRate = 720,
+  } = {}) {
     if (!Number.isInteger(maxSamples) || maxSamples < 2 || !(teleportThreshold > 0) ||
-        !(maxVisualVelocity > 0)) {
+        !(maxVisualVelocity > 0) || !Number.isFinite(maxVisualVelocity) ||
+        !(maxVisualYawRate > 0) || !Number.isFinite(maxVisualYawRate)) {
       throw new RangeError("remote interpolation limits must be positive");
     }
     this.maxSamples = maxSamples;
     this.teleportThreshold = teleportThreshold;
     this.maxVisualVelocity = maxVisualVelocity;
+    this.maxVisualYawRate = maxVisualYawRate;
     this.samples = [];
     this.lastPushTeleported = false;
     this.lastSample = null;
   }
 
   push(snapshot) {
+    if (!snapshot || !Number.isInteger(snapshot.tick) || snapshot.tick < 0 ||
+        !Array.isArray(snapshot.position) || snapshot.position.length !== 3 ||
+        !snapshot.position.every(Number.isFinite) || !Array.isArray(snapshot.velocity) ||
+        snapshot.velocity.length !== 3 || !snapshot.velocity.every(Number.isFinite) ||
+        !Number.isFinite(snapshot.character_yaw ?? 0) ||
+        !Number.isFinite(snapshot.yaw_rate ?? 0)) {
+      throw new TypeError("remote snapshot must contain finite tick, transform, and velocity data");
+    }
     const newest = this.samples.at(-1);
     this.lastPushTeleported = false;
     if (
@@ -223,7 +447,8 @@ export class RemoteSnapshotBuffer {
 
   sample(renderTick, tickRate, maxExtrapolationSeconds = 0.1) {
     if (this.samples.length === 0) return null;
-    if (!(tickRate > 0) || !(maxExtrapolationSeconds >= 0)) {
+    if (!Number.isFinite(renderTick) || !(tickRate > 0) || !Number.isFinite(tickRate) ||
+        !(maxExtrapolationSeconds >= 0) || !Number.isFinite(maxExtrapolationSeconds)) {
       throw new RangeError("remote sampling rate and extrapolation limit are invalid");
     }
     if (renderTick <= this.samples[0].tick) {
@@ -237,14 +462,22 @@ export class RemoteSnapshotBuffer {
       const ticks = b.tick - a.tick;
       const alpha = ticks > 0 ? (renderTick - a.tick) / ticks : 0;
       const duration = ticks / tickRate;
-      const yawDelta = ((b.character_yaw - a.character_yaw + 540) % 360) - 180;
+      const yaw = boundedYawHermite(
+        Number(a.character_yaw ?? 0),
+        Number(a.yaw_rate ?? 0),
+        Number(b.character_yaw ?? 0),
+        Number(b.yaw_rate ?? 0),
+        alpha,
+        duration,
+        this.maxVisualYawRate,
+      );
       const position = boundedHermite(
         a.position, a.velocity, b.position, b.velocity, alpha, duration, this.maxVisualVelocity,
       );
       this.lastSample = {
         ...b,
         position: position.position,
-        character_yaw: normalizeDegrees(a.character_yaw + yawDelta * alpha),
+        character_yaw: yaw,
         extrapolation_seconds: 0,
         interpolation_mode: position.mode,
       };
@@ -264,7 +497,10 @@ export class RemoteSnapshotBuffer {
       position: newest.position.map((value, index) =>
         value + newest.velocity[index] * velocityScale * seconds),
       character_yaw: normalizeDegrees(
-        newest.character_yaw + Math.max(-720, Math.min(720, newest.yaw_rate ?? 0)) * seconds,
+        newest.character_yaw + Math.max(
+          -this.maxVisualYawRate,
+          Math.min(this.maxVisualYawRate, newest.yaw_rate ?? 0),
+        ) * seconds,
       ),
       extrapolation_seconds: seconds,
       interpolation_mode: seconds > 0 ? "extrapolation" : "hold",

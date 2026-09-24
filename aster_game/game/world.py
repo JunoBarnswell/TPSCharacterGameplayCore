@@ -14,7 +14,6 @@ from aster_game.game.components import (
 from aster_game.game.events import DamageRequest, EventBus, GameplayEvent, ResolvedDamage
 from aster_game.game.movement.solver import angle_delta
 from aster_game.game.movement.state import (
-    ActionLayer,
     CharacterMovementState,
     LifeState,
     LocomotionPhase,
@@ -233,12 +232,11 @@ class GameWorld:
         character.health.invulnerable_until_tick = self.tick_id
         character.fall = FallComponent()
         character.life_state = LifeState.ALIVE
-        character.action_layer = ActionLayer.NONE
+        character.action_channels.clear(self.tick_id)
         character.hit_direction = None
         character.hit_region = None
         character.hit_strength = 0.0
         character.hit_source_position = None
-        character.action_until_tick = self.tick_id
         character.previous_channels = None
         character.attack_ready_tick = self.tick_id
         self.publish(
@@ -278,6 +276,7 @@ class GameWorld:
                 "horizontal_speed": character.movement.horizontal_speed,
                 "vertical_speed": character.movement.vertical_speed,
                 "grounded": character.movement.grounded,
+                "last_grounded_tick": character.movement.last_grounded_tick,
                 "floor_normal": character.movement.floor_normal,
                 "floor_distance": (
                     character.movement.floor_distance
@@ -293,6 +292,7 @@ class GameWorld:
                 "ground_entity": character.movement.ground_entity,
                 "movement_mode": character.movement.movement_mode.value,
                 "actual_gait": character.movement.actual_gait.value,
+                "gait_phase": character.movement.gait_phase,
                 "requested_gait": character.movement.requested_gait.value,
                 "character_yaw": character.movement.character_yaw,
                 "desired_facing_yaw": character.movement.desired_facing_yaw,
@@ -354,7 +354,7 @@ class GameWorld:
                 ),
                 "landing_impact_velocity": character.fall.impact_velocity,
                 "jump_held": character.movement.jump_held,
-                "action_layer": character.action_layer.value,
+                "action_channels": character.action_channels.snapshot(),
                 "life_state": character.life_state.value,
                 "hit_direction": character.hit_direction,
                 "hit_region": character.hit_region,
