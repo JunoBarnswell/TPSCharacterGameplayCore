@@ -9,8 +9,9 @@ from panda3d.bullet import (
     BulletSphereShape,
     BulletWorld,
     YUp,
+    getDefaultUpAxis,
 )
-from panda3d.core import BitMask32, NodePath, Point3, TransformState, Vec3
+from panda3d.core import BitMask32, NodePath, Point3, TransformState, Vec3, loadPrcFileData
 
 from aster_game.app.config import Settings
 
@@ -26,6 +27,11 @@ class PhysicsWorld:
     """Headless Bullet world owned exclusively by one game room."""
 
     def __init__(self, settings: Settings) -> None:
+        if getDefaultUpAxis() != YUp:
+            loadPrcFileData("aster-game", "coordinate-system y-up-right")
+        if getDefaultUpAxis() != YUp:
+            raise RuntimeError("Panda3D Bullet must use the Y-up coordinate system")
+
         self.settings = settings
         self.world = BulletWorld()
         self.world.setGravity(Vec3(0.0, -settings.gravity, 0.0))
