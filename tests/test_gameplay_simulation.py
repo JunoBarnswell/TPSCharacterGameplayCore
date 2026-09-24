@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from math import isclose
+
 from aster_game.app.config import Settings
 from aster_game.game.components import InputCommand
 from aster_game.game.events import DamageRequest, DamageType
@@ -326,5 +328,55 @@ def test_projectile_hit_death_and_respawn_restore_character_state() -> None:
         assert target.movement.movement_mode.value != "disabled"
         assert target.movement.last_processed_input == -1
         assert any(event.type == "respawn" for event in respawn_events)
+    finally:
+        world.close()
+
+
+def test_projectile_direction_uses_server_validated_view_ray_not_character_facing() -> None:
+    world = make_world()
+    try:
+        attacker = world.add_player("aim-attacker", "Aim Attacker")
+        target = world.add_player("aim-target", "Aim Target")
+        settle(world)
+
+        attacker_position = (-8.0, attacker.transform.position[1], -4.0)
+        target_position = (-8.0, target.transform.position[1], 4.0)
+        attacker.physics.node_path.setPos(*attacker_position)
+        attacker.transform.position = attacker_position
+        attacker.movement.previous_position = attacker_position
+        attacker.movement.character_yaw = 90.0
+        attacker.transform.yaw = 90.0
+        target.physics.node_path.setPos(*target_position)
+        target.transform.position = target_position
+        target.movement.previous_position = target_position
+
+        assert world.queue_input(
+            attacker.entity_id,
+            InputCommand(
+                1,
+                1,
+                0.0,
+                0.0,
+                False,
+                RequestedGait.RUN,
+                0.0,
+                0.0,
+                "aim",
+            ),
+        )
+        assert world.queue_attack(attacker.entity_id)
+        events = world.tick(world.settings.fixed_dt)
+
+        projectile = next(iter(world.projectiles.values()))
+        velocity_length = sum(value * value for value in projectile.velocity) ** 0.5
+        direction = tuple(value / velocity_length for value in projectile.velocity)
+        assert abs(direction[0]) < 0.2
+        assert direction[2] > 0.98
+        fired = next(event for event in events if event.type == "attack_fired")
+        assert all(
+            isclose(actual, expected, abs_tol=1e-9)
+            for actual, expected in zip(direction, fired.data["aim_direction"], strict=True)
+        )
+        assert not isclose(direction[0], 1.0, abs_tol=0.1)
     finally:
         world.close()

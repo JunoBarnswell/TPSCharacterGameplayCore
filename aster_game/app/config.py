@@ -63,6 +63,8 @@ class Settings(BaseSettings):
     projectile_range: float = Field(default=60.0, gt=0.0)
     projectile_damage: float = Field(default=34.0, gt=0.0)
     attack_cooldown_seconds: float = Field(default=0.75, gt=0.0)
+    aim_origin_height: float = Field(default=0.55, ge=0.0)
+    weapon_muzzle_height: float = Field(default=0.2, ge=0.0)
     jump_cooldown_seconds: float = Field(default=0.25, ge=0.0)
     character_radius: float = Field(default=0.45, gt=0.0)
     character_cylinder_height: float = Field(default=0.9, gt=0.0)

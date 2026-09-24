@@ -219,6 +219,27 @@ class PhysicsWorld:
             fraction=float(result.getHitFraction()),
         )
 
+    def raycast(
+        self,
+        start: tuple[float, float, float],
+        end: tuple[float, float, float],
+        *,
+        ignore_node_name: str | None = None,
+    ) -> SweepHit | None:
+        result = self.world.rayTestAll(Point3(*start), Point3(*end), BitMask32.allOn())
+        hits = sorted(result.getHits(), key=lambda hit: hit.getHitFraction())
+        for hit in hits:
+            node_name = hit.getNode().getName()
+            if node_name == ignore_node_name:
+                continue
+            hit_pos = hit.getHitPos()
+            return SweepHit(
+                node_name=node_name,
+                position=(float(hit_pos.x), float(hit_pos.y), float(hit_pos.z)),
+                fraction=float(hit.getHitFraction()),
+            )
+        return None
+
     def probe_ground(
         self, position: tuple[float, float, float]
     ) -> tuple[GroundProbeHit, ...]:
