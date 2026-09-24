@@ -92,6 +92,14 @@ class MovementTuning(WireModel):
     landing_soft_velocity: float = Field(ge=0.0)
     landing_heavy_velocity: float = Field(gt=0.0)
     landing_recovery_seconds: float = Field(ge=0.0)
+    max_walkable_slope: float = Field(gt=0.0, le=89.0)
+    ground_probe_radius: float = Field(gt=0.0)
+    ground_probe_depth: float = Field(gt=0.0)
+    ground_probe_start_offset: float = Field(ge=0.0)
+    ground_snap_distance: float = Field(ge=0.0)
+    ground_grace_distance: float = Field(ge=0.0)
+    ground_grace_ticks: int = Field(ge=0)
+    character_step_height: float = Field(ge=0.0)
 
 
 class WelcomeMessage(WireModel):
@@ -138,6 +146,8 @@ class PlayerSnapshot(WireModel):
     floor_normal: tuple[float, float, float]
     floor_distance: float | None
     walkable_floor: bool
+    ground_contact_confirmed: bool
+    ground_sample_count: int
     slope_angle: float
     ground_contact_point: tuple[float, float, float] | None
     ground_entity: str | None

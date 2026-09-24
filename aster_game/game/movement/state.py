@@ -68,6 +68,11 @@ class CharacterMovementState:
     floor_normal: tuple[float, float, float] = (0.0, 1.0, 0.0)
     floor_distance: float = 0.0
     walkable_floor: bool = True
+    ground_contact_confirmed: bool = False
+    ground_sample_count: int = 0
+    last_grounded_tick: int = -1
+    blocked_move_ticks: int = 0
+    solver_horizontal_velocity: tuple[float, float] = (0.0, 0.0)
     slope_angle: float = 0.0
     ground_contact_point: tuple[float, float, float] | None = None
     ground_entity: str | None = None

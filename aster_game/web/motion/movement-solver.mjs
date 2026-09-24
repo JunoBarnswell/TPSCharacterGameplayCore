@@ -69,6 +69,19 @@ export function deriveActualGait(horizontalSpeed, tuning) {
   return "sprint";
 }
 
+export function projectVelocityOntoGroundPlane(velocity, normal) {
+  const normalLength = Math.hypot(...normal);
+  if (normalLength <= 1e-8) throw new RangeError("ground normal must have non-zero length");
+  const unitNormal = normal.map((component) => component / normalLength);
+  const normalVelocity = velocity.reduce((sum, value, axis) => sum + value * unitNormal[axis], 0);
+  const projected = velocity.map((value, axis) => value - normalVelocity * unitNormal[axis]);
+  const originalSpeed = Math.hypot(...velocity);
+  const projectedSpeed = Math.hypot(...projected);
+  if (projectedSpeed <= 1e-8 || originalSpeed <= 1e-8) return [0, 0, 0];
+  const scale = originalSpeed / projectedSpeed;
+  return projected.map((component) => component * scale);
+}
+
 export function solveHorizontalVelocity(current, desired, dt, grounded, tuning, requestedGait = "run") {
   if (!(dt > 0)) throw new RangeError("dt must be positive");
   let vx = current[0];
@@ -169,8 +182,18 @@ export function solveRotation(currentYaw, angularVelocity, desiredYaw, dt, tunin
 export function predictMovementStep(state, input, tuning, dt) {
   if (state.life_state === "dead") return { ...state, last_processed_input: input.sequence };
   const desired = desiredMotion(input, tuning);
-  const desiredSpeed = Math.hypot(desired.velocity[0], desired.velocity[2]);
   const grounded = state.grounded && state.walkable_floor !== false;
+  if (grounded && (state.floor_normal?.[1] ?? 1) > 1e-4) {
+    desired.velocity = projectVelocityOntoGroundPlane(
+      desired.velocity,
+      state.floor_normal ?? [0, 1, 0],
+    );
+    const projectedLength = Math.hypot(...desired.velocity);
+    desired.direction = projectedLength > 1e-6
+      ? desired.velocity.map((component) => component / projectedLength)
+      : [0, 0, 0];
+  }
+  const desiredSpeed = Math.hypot(desired.velocity[0], desired.velocity[2]);
   const solved = solveHorizontalVelocity(
     state.velocity,
     desired.velocity,

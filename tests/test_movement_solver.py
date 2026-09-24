@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from math import cos, radians, sin
+
+import pytest
+
 from aster_game.app.config import Settings
 from aster_game.game.components import InputCommand
 from aster_game.game.events import DamageRequest, DamageType
@@ -7,6 +11,7 @@ from aster_game.game.movement.solver import (
     derive_actual_gait,
     desired_motion,
     landing_classification,
+    project_velocity_onto_ground_plane,
     solve_horizontal_velocity,
     solve_rotation,
 )
@@ -182,6 +187,17 @@ def test_directional_friction_and_pivot_braking_preserve_bounded_momentum() -> N
     assert (pivot[0] ** 2 + pivot[1] ** 2) ** 0.5 < (
         quarter_turn[0] ** 2 + quarter_turn[1] ** 2
     ) ** 0.5
+
+
+def test_ground_plane_projection_preserves_speed_and_removes_normal_velocity() -> None:
+    angle = radians(30.0)
+    normal = (0.0, cos(angle), -sin(angle))
+    projected = project_velocity_onto_ground_plane((0.0, 0.0, 4.0), normal)
+
+    assert (sum(component * component for component in projected)) ** 0.5 == pytest.approx(4.0)
+    normal_velocity = sum(value * axis for value, axis in zip(projected, normal, strict=True))
+    assert normal_velocity == pytest.approx(0.0, abs=1e-10)
+    assert projected[1] > 0.0
 
 
 def test_air_control_preserves_existing_horizontal_inertia() -> None:

@@ -148,6 +148,14 @@ async def handle_websocket(
                     landing_soft_velocity=settings.landing_soft_velocity,
                     landing_heavy_velocity=settings.landing_heavy_velocity,
                     landing_recovery_seconds=settings.landing_recovery_seconds,
+                    max_walkable_slope=settings.max_walkable_slope,
+                    ground_probe_radius=settings.ground_probe_radius,
+                    ground_probe_depth=settings.ground_probe_depth,
+                    ground_probe_start_offset=settings.ground_probe_start_offset,
+                    ground_snap_distance=settings.ground_snap_distance,
+                    ground_grace_distance=settings.ground_grace_distance,
+                    ground_grace_ticks=settings.ground_grace_ticks,
+                    character_step_height=settings.character_step_height,
                 ),
             ).model_dump(mode="json")
         )

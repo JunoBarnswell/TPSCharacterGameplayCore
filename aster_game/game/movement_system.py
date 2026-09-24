@@ -3,7 +3,7 @@ from __future__ import annotations
 from math import acos, ceil, cos, degrees, hypot, radians
 from typing import TYPE_CHECKING
 
-from panda3d.core import BitMask32, Point3, Vec3
+from panda3d.core import Vec3
 
 from aster_game.game.events import DamageRequest, DamageType
 from aster_game.game.movement.solver import (
@@ -12,6 +12,7 @@ from aster_game.game.movement.solver import (
     desired_facing_yaw,
     desired_motion,
     landing_classification,
+    project_velocity_onto_ground_plane,
     solve_horizontal_velocity,
     solve_rotation,
 )
@@ -66,6 +67,7 @@ class MovementSystem:
             movement.previous_desired_velocity = movement.desired_velocity
             if character.life_state is not LifeState.ALIVE:
                 character.physics.controller.setLinearMovement(Vec3(0.0, 0.0, 0.0), False)
+                character.physics.controller.setGravity(settings.gravity)
                 movement.movement_mode = MovementMode.DISABLED
                 continue
             if world.tick_id - movement.last_input_tick > input_timeout_ticks:
@@ -83,6 +85,14 @@ class MovementSystem:
                 settings.run_speed,
                 settings.sprint_speed,
             )
+            if movement.grounded and movement.walkable_floor and movement.floor_normal[1] > 1e-4:
+                desired = project_velocity_onto_ground_plane(desired, movement.floor_normal)
+                desired_length = hypot(hypot(desired[0], desired[1]), desired[2])
+                direction = (
+                    tuple(component / desired_length for component in desired)
+                    if desired_length > 1e-6
+                    else (0.0, 0.0, 0.0)
+                )
             movement.desired_velocity = desired
             movement.desired_move_direction = direction
             acceleration_curve = {
@@ -109,9 +119,70 @@ class MovementSystem:
                 braking_curve=settings.braking_curve,
                 reference_speed=settings.sprint_speed,
             )
+            movement.solver_horizontal_velocity = horizontal
+            desired_horizontal_speed = hypot(desired[0], desired[2])
+            if (
+                movement.grounded
+                and movement.ground_contact_confirmed
+                and movement.walkable_floor
+                and movement.ground_contact_point is not None
+                and desired_horizontal_speed > 0.5
+                and movement.blocked_move_ticks >= 1
+            ):
+                step_origin = character.transform.position
+                proposed_position = (
+                    step_origin[0] + horizontal[0] * dt,
+                    step_origin[1],
+                    step_origin[2] + horizontal[1] * dt,
+                )
+                step = world.physics.find_step_up_target(
+                    step_origin,
+                    proposed_position,
+                    movement.ground_contact_point[1],
+                )
+                if step is not None:
+                    step_position, support = step
+                    character.physics.node_path.setPos(*step_position)
+                    character.transform.position = step_position
+                    movement.previous_position = step_position
+                    movement.floor_normal = support.normal
+                    movement.floor_distance = settings.ground_probe_radius
+                    movement.ground_contact_point = support.position
+                    movement.ground_entity = support.node_name
+                    movement.slope_angle = degrees(
+                        acos(max(-1.0, min(1.0, support.normal[1])))
+                    )
+                    movement.walkable_floor = True
+                    movement.ground_sample_count = max(movement.ground_sample_count, 1)
+                    movement.grounded = True
+                    movement.ground_contact_confirmed = True
+                    movement.movement_mode = MovementMode.GROUNDED
+                    movement.blocked_move_ticks = 0
+                    world.publish(
+                        "step_up",
+                        entity_id=character.entity_id,
+                        ground_entity=support.node_name,
+                        position=step_position,
+                    )
             movement.acceleration = (acceleration[0], movement.acceleration[1], acceleration[1])
+            character.physics.controller.setGravity(
+                0.0 if movement.grounded and movement.walkable_floor else settings.gravity
+            )
             character.physics.controller.setLinearMovement(
-                Vec3(horizontal[0], 0.0, horizontal[1]), False
+                Vec3(
+                    horizontal[0],
+                    -(
+                        movement.floor_normal[0] * horizontal[0]
+                        + movement.floor_normal[2] * horizontal[1]
+                    )
+                    / movement.floor_normal[1]
+                    if movement.grounded
+                    and movement.walkable_floor
+                    and movement.floor_normal[1] > 1e-4
+                    else 0.0,
+                    horizontal[1],
+                ),
+                False,
             )
 
             facing = desired_facing_yaw(
@@ -152,11 +223,13 @@ class MovementSystem:
             if movement.jump_requested:
                 can_jump = (
                     movement.grounded
+                    and movement.ground_contact_confirmed
                     and movement.walkable_floor
                     and world.tick_id - movement.last_jump_tick >= jump_cooldown_ticks
                 )
                 if can_jump:
                     character.physics.controller.doJump()
+                    character.physics.controller.setGravity(settings.gravity)
                     movement.last_jump_tick = world.tick_id
                     fall = character.fall
                     fall.airborne = True
@@ -201,6 +274,19 @@ class PhysicsStepSystem:
                 (new_position[1] - old_position[1]) / dt,
                 (new_position[2] - old_position[2]) / dt,
             )
+            requested_x, requested_z = movement.solver_horizontal_velocity
+            requested_speed = hypot(requested_x, requested_z)
+            if requested_speed > 0.25:
+                actual_progress = (
+                    movement.velocity[0] * requested_x
+                    + movement.velocity[2] * requested_z
+                ) / requested_speed
+                if actual_progress < requested_speed * 0.55:
+                    movement.blocked_move_ticks = min(3, movement.blocked_move_ticks + 1)
+                else:
+                    movement.blocked_move_ticks = 0
+            else:
+                movement.blocked_move_ticks = 0
             movement.horizontal_speed = hypot(movement.velocity[0], movement.velocity[2])
             movement.current_speed = hypot(movement.horizontal_speed, movement.velocity[1])
             movement.vertical_speed = movement.velocity[1]
@@ -216,88 +302,6 @@ class PhysicsStepSystem:
                 movement.acceleration[2],
             )
             character.transform.position = new_position
-
-
-class GroundSystem:
-    def update(self, world: GameWorld, dt: float) -> None:
-        settings = world.settings
-        half_height = settings.character_radius + settings.character_cylinder_height / 2.0
-        max_slope = settings.max_walkable_slope
-        for character in world.characters.values():
-            movement = character.movement
-            if character.life_state is not LifeState.ALIVE:
-                continue
-            old_grounded = movement.grounded
-            position = character.transform.position
-            origin = Point3(position[0], position[1] + 0.2, position[2])
-            end = Point3(position[0], position[1] - half_height - 0.3, position[2])
-            result = world.physics.world.rayTestAll(origin, end, BitMask32.allOn())
-            contacts: list[
-                tuple[float, tuple[float, float, float], tuple[float, float, float], str]
-            ] = []
-            for hit in result.getHits():
-                node = hit.getNode()
-                name = node.getName()
-                if name.startswith("character:"):
-                    continue
-                normal = hit.getHitNormal()
-                contact = hit.getHitPos()
-                if normal.y <= 0.0:
-                    continue
-                contacts.append(
-                    (
-                        float(hit.getHitFraction()),
-                        (float(normal.x), float(normal.y), float(normal.z)),
-                        (float(contact.x), float(contact.y), float(contact.z)),
-                        name,
-                    )
-                )
-            contacts.sort(key=lambda item: item[0])
-            controller_grounded = character.physics.controller.isOnGround()
-            if contacts:
-                _, normal, contact, entity = contacts[0]
-                slope = degrees(acos(max(-1.0, min(1.0, normal[1]))))
-                feet_y = position[1] - half_height
-                movement.floor_distance = max(0.0, feet_y - contact[1])
-                movement.floor_normal = normal
-                movement.ground_contact_point = contact
-                movement.ground_entity = entity
-                movement.slope_angle = slope
-                movement.walkable_floor = slope <= max_slope
-            else:
-                movement.floor_distance = float("inf")
-                movement.floor_normal = (0.0, 1.0, 0.0)
-                movement.ground_contact_point = None
-                movement.ground_entity = None
-                movement.slope_angle = 0.0
-                movement.walkable_floor = False
-            movement.grounded = controller_grounded and movement.walkable_floor
-            movement.movement_mode = (
-                MovementMode.GROUNDED if movement.grounded else MovementMode.AIRBORNE
-            )
-            fall = character.fall
-            if old_grounded and not movement.grounded and not fall.airborne:
-                fall.airborne = True
-                fall.apex_reached = False
-                fall.jump_started = False
-                fall.start_y = movement.previous_position[1]
-                fall.start_tick = world.tick_id
-                fall.last_vertical_velocity = movement.velocity[1]
-                fall.impact_velocity = 0.0
-            elif (
-                not movement.grounded
-                and not fall.airborne
-                and movement.vertical_speed < -world.settings.apex_velocity_threshold
-            ):
-                fall.airborne = True
-                fall.apex_reached = False
-                fall.jump_started = False
-                fall.start_y = movement.previous_position[1]
-                fall.start_tick = world.tick_id
-                fall.last_vertical_velocity = movement.vertical_speed
-                fall.impact_velocity = 0.0
-            elif not movement.grounded and fall.airborne:
-                fall.last_vertical_velocity = movement.velocity[1]
 
 
 class AirLifecycleSystem:

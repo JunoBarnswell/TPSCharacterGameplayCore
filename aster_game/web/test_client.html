@@ -550,6 +550,9 @@
           "turn_in_place_threshold", "pivot_angle_threshold", "jump_speed", "gravity",
           "max_fall_speed", "apex_velocity_threshold", "jump_cooldown_seconds",
           "landing_soft_velocity", "landing_heavy_velocity", "landing_recovery_seconds",
+          "max_walkable_slope", "ground_probe_radius", "ground_probe_depth",
+          "ground_probe_start_offset", "ground_snap_distance", "ground_grace_distance",
+          "ground_grace_ticks", "character_step_height",
         ];
         const curveKeys = [
           "walk_acceleration_curve", "run_acceleration_curve", "sprint_acceleration_curve",
@@ -802,7 +805,7 @@
       $("rotationModeValue").textContent = self.rotation_mode.toUpperCase();
       $("accelValue").textContent = formatVector(self.acceleration);
       $("desiredMovementValue").textContent = `${formatVector([self.desired_velocity[0], self.desired_velocity[2]])} · ${Number(self.horizontal_speed).toFixed(2)} m/s`;
-      $("floorValue").textContent = `${self.grounded ? "YES" : "NO"} · ${formatVector(self.floor_normal)} · ${Number(self.slope_angle).toFixed(1)}° · ${self.floor_distance === null ? "—" : Number(self.floor_distance).toFixed(2)}m`;
+      $("floorValue").textContent = `${self.grounded ? "YES" : "NO"} · contact ${self.ground_contact_confirmed ? "YES" : "NO"} · ${self.ground_sample_count} probes · ${formatVector(self.floor_normal)} · ${Number(self.slope_angle).toFixed(1)}° · ${self.floor_distance === null ? "—" : Number(self.floor_distance).toFixed(2)}m`;
       $("facingValue").textContent = `${Number(self.character_yaw).toFixed(1)}° · ${Number(self.desired_facing_yaw).toFixed(1)}°`;
       $("viewValue").textContent = `${Number(self.view_yaw).toFixed(1)}° · ${Number(self.view_pitch).toFixed(1)}°`;
       $("aimValue").textContent = `${Number(self.aim_yaw).toFixed(1)}° · ${Number(self.aim_pitch).toFixed(1)}°`;

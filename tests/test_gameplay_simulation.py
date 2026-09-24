@@ -63,6 +63,8 @@ def test_jump_enters_air_and_returns_to_ground() -> None:
         settle(world)
         ground_y = character.transform.position[1]
         assert character.movement.grounded
+        assert character.movement.ground_contact_confirmed
+        assert character.movement.ground_sample_count == 5
         assert character.movement.walkable_floor
         assert character.movement.ground_contact_point is not None
         assert character.movement.ground_entity == "arena-floor"
@@ -86,6 +88,143 @@ def test_jump_enters_air_and_returns_to_ground() -> None:
         assert any(event.type == "fall_started" for event in events)
         assert any(event.type == "landing_started" for event in events)
         assert any(event.type == "landed" for event in events)
+    finally:
+        world.close()
+
+
+def test_ground_probe_uses_configured_slope_and_five_sphere_sweeps() -> None:
+    world = make_world(max_walkable_slope=37.0)
+    try:
+        character = world.add_player("player", "Player")
+        settle(world)
+
+        assert character.physics.controller.getMaxSlope() == 37.0
+        assert character.movement.ground_contact_confirmed
+        assert character.movement.grounded
+        assert character.movement.ground_sample_count == 5
+        assert character.movement.ground_entity == "arena-floor"
+    finally:
+        world.close()
+
+
+def test_step_solver_moves_character_onto_walkable_step() -> None:
+    world = make_world()
+    try:
+        character = world.add_player("player", "Player")
+        start = (0.0, world.settings.spawn_height, 4.0)
+        character.physics.node_path.setPos(*start)
+        character.transform.position = start
+        character.movement.previous_position = start
+        settle(world)
+
+        for sequence in range(1, 121):
+            assert world.queue_input(
+                character.entity_id,
+                InputCommand(
+                    sequence,
+                    sequence,
+                    0.0,
+                    1.0,
+                    False,
+                    RequestedGait.RUN,
+                    0.0,
+                    0.0,
+                    "orient_to_movement",
+                ),
+            )
+            world.tick(world.settings.fixed_dt)
+            if character.movement.ground_entity == "upper-platform-step-1":
+                break
+
+        assert character.transform.position[2] > 4.6
+        assert character.transform.position[1] >= 1.15
+        assert character.movement.grounded
+        assert character.movement.ground_contact_confirmed
+        assert character.movement.ground_entity == "upper-platform-step-1"
+        step_y = character.transform.position[1]
+
+        last_sequence = sequence
+        for step_down_sequence in range(last_sequence + 1, last_sequence + 41):
+            assert world.queue_input(
+                character.entity_id,
+                InputCommand(
+                    step_down_sequence,
+                    step_down_sequence,
+                    0.0,
+                    -1.0,
+                    False,
+                    RequestedGait.WALK,
+                    0.0,
+                    0.0,
+                    "orient_to_movement",
+                ),
+            )
+            world.tick(world.settings.fixed_dt)
+            if character.movement.ground_entity == "arena-floor":
+                break
+
+        assert character.movement.grounded
+        assert character.movement.ground_entity == "arena-floor"
+        assert character.transform.position[1] < step_y - 0.2
+    finally:
+        world.close()
+
+
+def test_walkable_slope_stays_grounded_and_moves_along_plane() -> None:
+    world = make_world()
+    try:
+        character = world.add_player("player", "Player")
+        start = (8.0, 2.0, -4.0)
+        character.physics.node_path.setPos(*start)
+        character.transform.position = start
+        character.movement.previous_position = start
+        settle(world)
+
+        assert character.movement.grounded
+        assert character.movement.ground_entity == "walkable-ramp"
+        assert 19.0 <= character.movement.slope_angle <= 21.0
+        start_y, start_z = character.transform.position[1], character.transform.position[2]
+
+        for sequence in range(1, 31):
+            assert world.queue_input(
+                character.entity_id,
+                InputCommand(
+                    sequence,
+                    sequence,
+                    0.0,
+                    1.0,
+                    False,
+                    RequestedGait.WALK,
+                    0.0,
+                    0.0,
+                    "orient_to_movement",
+                ),
+            )
+            world.tick(world.settings.fixed_dt)
+
+        assert character.transform.position[2] > start_z + 0.5
+        assert character.transform.position[1] > start_y + 0.2
+        assert character.movement.grounded
+        assert character.movement.ground_entity == "walkable-ramp"
+    finally:
+        world.close()
+
+
+def test_slope_above_configured_limit_is_not_walkable() -> None:
+    world = make_world(max_walkable_slope=10.0)
+    try:
+        character = world.add_player("player", "Player")
+        start = (8.0, 2.0, -4.0)
+        character.physics.node_path.setPos(*start)
+        character.transform.position = start
+        character.movement.previous_position = start
+
+        world.tick(world.settings.fixed_dt)
+
+        assert character.movement.ground_entity == "walkable-ramp"
+        assert character.movement.slope_angle > world.settings.max_walkable_slope
+        assert not character.movement.walkable_floor
+        assert not character.movement.ground_contact_confirmed
     finally:
         world.close()
 

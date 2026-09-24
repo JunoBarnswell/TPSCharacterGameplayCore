@@ -79,7 +79,7 @@ Gameplay events include `motion_state_changed`, `jump_started`, `rising`, `apex_
 - Client render rate is independent of server simulation and snapshot rates.
 - Y is the vertical axis; character transforms use world coordinates in meters.
 - The arena has a floor, perimeter walls, central cover, and a stepped upper platform that makes
-  threshold fall damage reachable during play.
+  threshold fall damage reachable during play, plus a walkable 20-degree ramp for slope movement.
 - Characters use a server-side Bullet capsule controller. Projectiles use swept-sphere queries so
   fast projectiles do not skip collisions between ticks.
 - Simulation state is in memory. No database or external message broker participates in gameplay.
@@ -90,7 +90,8 @@ All settings can be overridden with the `ASTER_GAME_` prefix, for example
 ## Motion architecture
 
 See [`docs/character-motion-runtime.md`](docs/character-motion-runtime.md) for motion-state channels,
-solver order, protocol-v2 ownership, prediction/reconciliation, interpolation, and runtime boundaries.
+solver order, protocol-v3 ownership, ground probing, prediction/reconciliation, interpolation, and
+runtime boundaries.
 
 The current browser runtime provides a two-dimensional blend-space weight model, additive aim and hit
 layers, inertialized blend weights, semantic orientation-warp angle, trajectory samples, and bounded

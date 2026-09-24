@@ -8,6 +8,7 @@ import {
   evaluateResponseCurve,
   desiredMotion,
   predictMovementStep,
+  projectVelocityOntoGroundPlane,
   solveHorizontalVelocity,
   solveRotation,
 } from "../aster_game/web/motion/movement-solver.mjs";
@@ -196,6 +197,15 @@ test("direction changes retain momentum and 180 degree pivots brake harder", () 
   assert.ok(quarterTurn.velocity[0] > 0);
   assert.ok(pivot.velocity[2] > 0);
   assert.ok(Math.hypot(...pivot.velocity) < Math.hypot(...quarterTurn.velocity));
+});
+
+test("ground plane projection preserves speed and removes normal velocity", () => {
+  const angle = Math.PI / 6;
+  const normal = [0, Math.cos(angle), -Math.sin(angle)];
+  const projected = projectVelocityOntoGroundPlane([0, 0, 4], normal);
+  assert.ok(Math.abs(Math.hypot(...projected) - 4) < 1e-10);
+  assert.ok(Math.abs(projected.reduce((sum, value, axis) => sum + value * normal[axis], 0)) < 1e-10);
+  assert.ok(projected[1] > 0);
 });
 
 test("air steering keeps inherited velocity and applies bounded acceleration", () => {

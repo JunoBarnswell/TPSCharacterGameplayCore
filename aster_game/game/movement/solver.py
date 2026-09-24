@@ -75,6 +75,26 @@ def _move_towards(
     return current[0] + dx * scale, current[1] + dz * scale
 
 
+def project_velocity_onto_ground_plane(
+    velocity: tuple[float, float, float], normal: tuple[float, float, float]
+) -> tuple[float, float, float]:
+    normal_length = sqrt(sum(component * component for component in normal))
+    if normal_length <= 1e-8:
+        raise ValueError("ground normal must have non-zero length")
+    unit_normal = tuple(component / normal_length for component in normal)
+    normal_velocity = sum(value * axis for value, axis in zip(velocity, unit_normal, strict=True))
+    projected = tuple(
+        value - normal_velocity * axis
+        for value, axis in zip(velocity, unit_normal, strict=True)
+    )
+    original_speed = sqrt(sum(component * component for component in velocity))
+    projected_speed = sqrt(sum(component * component for component in projected))
+    if projected_speed <= 1e-8 or original_speed <= 1e-8:
+        return 0.0, 0.0, 0.0
+    scale = original_speed / projected_speed
+    return tuple(component * scale for component in projected)  # type: ignore[return-value]
+
+
 def solve_horizontal_velocity(
     current: tuple[float, float],
     desired: tuple[float, float],
