@@ -15,6 +15,7 @@ from aster_game.network.messages import (
     InputMessage,
     JoinedMessage,
     JoinGameMessage,
+    MovementTuning,
     PingMessage,
     PongMessage,
     RespawnMessage,
@@ -112,9 +113,16 @@ async def handle_websocket(
             return
         session.protocol_version = hello.protocol_version
         session.enqueue(
-            WelcomeMessage(session_id=session.session_id, tick_rate=settings.tick_rate).model_dump(
-                mode="json"
-            )
+            WelcomeMessage(
+                session_id=session.session_id,
+                tick_rate=settings.tick_rate,
+                movement_tuning=MovementTuning(
+                    walk_speed=settings.walk_speed,
+                    run_speed=settings.run_speed,
+                    sprint_speed=settings.sprint_speed,
+                    air_control=settings.air_control,
+                ),
+            ).model_dump(mode="json")
         )
 
         while True:

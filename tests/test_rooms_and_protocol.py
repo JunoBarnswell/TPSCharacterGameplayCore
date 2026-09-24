@@ -7,6 +7,7 @@ from time import perf_counter
 import httpx
 import uvicorn
 import websockets
+from pydantic import ValidationError
 
 from aster_game.app import main as app_module
 from aster_game.app.config import Settings
@@ -31,6 +32,17 @@ def test_protocol_rejects_out_of_range_and_unknown_fields() -> None:
         {"type": "input", "sequence": 1, "move_z": 1.0}
     )
     assert isinstance(parsed, InputMessage)
+
+
+def test_server_tick_rate_requires_at_least_60_hz() -> None:
+    defaults = Settings()
+    assert defaults.tick_rate == 60
+    assert defaults.snapshot_interval_ticks == 1
+    try:
+        Settings(tick_rate=59)
+    except ValidationError:
+        return
+    raise AssertionError("server accepted a tick rate below 60 Hz")
 
 
 def test_room_manager_creates_independent_worlds_at_capacity() -> None:
@@ -58,12 +70,21 @@ def test_room_manager_creates_independent_worlds_at_capacity() -> None:
 
 def test_room_loop_runs_near_configured_fixed_tick_rate() -> None:
     async def scenario() -> None:
-        settings = Settings(tick_rate=30, snapshot_interval_ticks=30)
+        settings = Settings(
+            tick_rate=60,
+            snapshot_interval_ticks=1,
+            max_players_per_room=16,
+        )
         metrics = RuntimeMetrics()
         manager = RoomManager(settings, metrics)
-        session = WebSocketSession(None, 64)  # type: ignore[arg-type]
+        sessions = [WebSocketSession(None, 64) for _ in range(settings.max_players_per_room)]
         try:
-            room_id, _, _, _ = await manager.join(session, "Runner", None)
+            joined = [
+                await manager.join(session, f"Runner {index}", None)
+                for index, session in enumerate(sessions)
+            ]
+            room_id = joined[0][0]
+            assert all(joined_room_id == room_id for joined_room_id, _, _, _ in joined)
             room = manager.get_room(room_id)
             assert room is not None
 
@@ -72,10 +93,12 @@ def test_room_loop_runs_near_configured_fixed_tick_rate() -> None:
             elapsed = perf_counter() - started
             measured_rate = room.world.tick_id / elapsed
 
-            assert 27.0 <= measured_rate <= 34.0
-            assert metrics.snapshot(1, 1, settings.tick_rate)[
+            assert 57.0 <= measured_rate <= 64.0
+            metrics_snapshot = metrics.snapshot(1, len(sessions), settings.tick_rate)
+            assert metrics_snapshot[
                 "server_tick_rate_observed_1s_min_room"
-            ] >= 27
+            ] >= 57
+            assert metrics_snapshot["snapshot_send_rate_1s"] >= 16 * 57
         finally:
             await manager.close()
 
@@ -110,10 +133,22 @@ def test_websocket_handshake_commands_snapshot_and_metrics(monkeypatch) -> None:
             assert server.servers
             port = server.servers[0].sockets[0].getsockname()[1]
             http_url = f"http://127.0.0.1:{port}"
+            async with httpx.AsyncClient() as client:
+                page_response = await client.get(f"{http_url}/")
+                assert page_response.status_code == 200
+                assert "Aster TPS Gameplay Test" in page_response.text
+
             async with websockets.connect(f"ws://127.0.0.1:{port}/ws") as websocket:
                 await websocket.send(json.dumps({"type": "hello", "protocol_version": 1}))
                 welcome = json.loads(await asyncio.wait_for(websocket.recv(), 2.0))
                 assert welcome["type"] == "welcome"
+                assert welcome["tick_rate"] == settings.tick_rate
+                assert welcome["movement_tuning"] == {
+                    "walk_speed": settings.walk_speed,
+                    "run_speed": settings.run_speed,
+                    "sprint_speed": settings.sprint_speed,
+                    "air_control": settings.air_control,
+                }
 
                 await websocket.send(
                     json.dumps({"type": "join_game", "player_name": "  Pilot  "})

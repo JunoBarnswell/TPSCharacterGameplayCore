@@ -56,11 +56,19 @@ ClientMessage: TypeAlias = Annotated[
 CLIENT_MESSAGE_ADAPTER = TypeAdapter(ClientMessage)
 
 
+class MovementTuning(WireModel):
+    walk_speed: float = Field(gt=0.0)
+    run_speed: float = Field(gt=0.0)
+    sprint_speed: float = Field(gt=0.0)
+    air_control: float = Field(ge=0.0, le=1.0)
+
+
 class WelcomeMessage(WireModel):
     type: Literal["welcome"] = "welcome"
     session_id: str
     protocol_version: int = 1
     tick_rate: int
+    movement_tuning: MovementTuning
 
 
 class JoinedMessage(WireModel):

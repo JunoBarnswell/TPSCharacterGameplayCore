@@ -1,0 +1,751 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#11141b">
+  <link rel="icon" href="data:,">
+  <title>Aster TPS Gameplay Test</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --page: #11141b;
+      --panel: #191d27;
+      --panel-raised: #202531;
+      --line: #303746;
+      --text: #edf0f5;
+      --muted: #9ca6b7;
+      --mint: #77e0c1;
+      --blue: #82aaff;
+      --red: #ff8296;
+      --gold: #f5cc77;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      background:
+        radial-gradient(ellipse at 6% 0%, #1b2831 0, transparent 33rem),
+        radial-gradient(ellipse at 100% 12%, #252234 0, transparent 30rem),
+        var(--page);
+      color: var(--text);
+      font: 14px/1.45 ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+    }
+
+    button, input { font: inherit; }
+
+    button {
+      min-height: 38px;
+      padding: 0 14px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: #272d39;
+      color: var(--text);
+      cursor: pointer;
+      transition: background .15s ease, border-color .15s ease, transform .15s ease;
+    }
+
+    button:hover:not(:disabled) { background: #333c4c; border-color: #536176; }
+    button:active:not(:disabled) { transform: translateY(1px); }
+    button:disabled { cursor: not-allowed; opacity: .45; }
+    button.primary { background: #1f6658; border-color: #348d77; color: #effff9; }
+    button.primary:hover:not(:disabled) { background: #287b69; }
+    button.danger { color: #ffc2cc; }
+
+    input {
+      width: 100%;
+      height: 38px;
+      padding: 0 11px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      outline: 0;
+      background: #11151d;
+      color: var(--text);
+    }
+
+    input:focus-visible, button:focus-visible {
+      outline: 2px solid var(--mint);
+      outline-offset: 2px;
+    }
+
+    .shell { width: min(1480px, calc(100% - 36px)); margin: 0 auto; padding: 22px 0 30px; }
+    .topbar, .brand, .connection-actions, .section-title, .button-row, .metric-line { display: flex; align-items: center; }
+    .topbar { justify-content: space-between; margin-bottom: 18px; }
+    .brand { gap: 12px; }
+    .brand-mark {
+      display: grid;
+      width: 38px;
+      height: 38px;
+      place-items: center;
+      border: 1px solid #3e7569;
+      border-radius: 12px;
+      background: #18342f;
+      color: var(--mint);
+      font-weight: 800;
+      letter-spacing: -.08em;
+    }
+    h1, h2, p { margin: 0; }
+    h1 { font-size: 17px; letter-spacing: -.02em; }
+    .eyebrow { color: var(--mint); font: 700 10px/1.2 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .13em; text-transform: uppercase; }
+    .subtitle { margin-top: 3px; color: var(--muted); font-size: 12px; }
+    .status-pill, .tick-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 30px;
+      padding: 0 11px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #171b23;
+      color: var(--muted);
+      font: 600 11px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+    }
+    .status-dot { width: 7px; height: 7px; border-radius: 100%; background: #697385; }
+    .status-pill[data-state="connected"] { border-color: #397c6d; color: var(--mint); }
+    .status-pill[data-state="connected"] .status-dot { background: var(--mint); box-shadow: 0 0 10px #77e0c180; }
+    .status-pill[data-state="error"] { border-color: #8b4653; color: #ffacba; }
+    .status-pill[data-state="error"] .status-dot { background: var(--red); }
+    .tick-pill[data-performance="under"] { border-color: #8b5360; color: #ff9eaf; }
+    .header-pills { display: flex; gap: 8px; }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: linear-gradient(160deg, #1b202a, #171b24 75%);
+      box-shadow: 0 12px 36px #00000020;
+    }
+
+    .connection-panel { display: grid; grid-template-columns: minmax(220px, 1.35fr) minmax(130px, .8fr) minmax(130px, .8fr) auto; gap: 12px; padding: 14px; margin-bottom: 16px; }
+    .field { display: grid; gap: 6px; min-width: 0; }
+    .field label { color: var(--muted); font-size: 11px; font-weight: 650; }
+    .connection-actions { gap: 8px; align-self: end; }
+    .layout { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(300px, .8fr); gap: 16px; align-items: start; }
+    .stage { overflow: hidden; }
+    .section-title { justify-content: space-between; gap: 12px; padding: 16px 17px 13px; }
+    .section-title h2 { font-size: 13px; font-weight: 700; }
+    .micro-label { color: var(--muted); font: 10px ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .canvas-wrap { position: relative; padding: 0 14px; }
+    canvas { display: block; width: 100%; height: min(57vh, 550px); min-height: 330px; border: 1px solid #303847; border-radius: 10px; background: #121820; }
+    .canvas-caption { display: flex; justify-content: space-between; gap: 10px; padding: 9px 3px 0; color: var(--muted); font-size: 11px; }
+    .legend { display: flex; gap: 12px; flex-wrap: wrap; }
+    .legend-item { display: inline-flex; align-items: center; gap: 6px; }
+    .legend-dot { width: 8px; height: 8px; border-radius: 100%; background: var(--mint); }
+    .legend-dot.remote { background: var(--red); }
+    .legend-dot.projectile { background: var(--gold); }
+    .legend-dot.server-position { border: 1px dashed var(--mint); background: transparent; }
+    .control-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 17px 16px; margin-top: 8px; }
+    .keyboard-help { color: var(--muted); font-size: 11px; }
+    kbd { display: inline-block; padding: 2px 5px; margin: 0 1px; border: 1px solid #414a5b; border-radius: 4px; background: #242a35; color: #e1e6ef; font: 10px ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .button-row { gap: 7px; flex-wrap: wrap; justify-content: flex-end; }
+
+    .side-stack { display: grid; gap: 16px; }
+    .stats-body { padding: 0 16px 16px; }
+    .self-heading { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; margin-bottom: 11px; }
+    .self-heading strong { font-size: 14px; }
+    .self-heading span { color: var(--muted); font: 10px ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .health-line { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 6px; font: 11px ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .health-track { height: 8px; overflow: hidden; border-radius: 999px; background: #343944; }
+    .health-fill { width: 100%; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #63cfae, #a6e6a1); transition: width .2s ease; }
+    .health-fill.low { background: linear-gradient(90deg, #ed6f83, #e5aa74); }
+    .state-chip { display: inline-flex; align-items: center; min-height: 22px; padding: 0 8px; border-radius: 6px; background: #253b39; color: var(--mint); font: 700 10px ui-monospace, SFMono-Regular, Consolas, monospace; text-transform: uppercase; }
+    .state-chip[data-state="dead"] { background: #462b34; color: #ff9eaf; }
+    .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+    .stat-cell { padding: 9px 10px; border: 1px solid #2c3340; border-radius: 8px; background: #161a22; }
+    .stat-cell span { display: block; color: var(--muted); font-size: 10px; }
+    .stat-cell strong { display: block; overflow: hidden; margin-top: 3px; font: 600 11px ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+    .roster { display: grid; gap: 6px; padding: 0 14px 14px; }
+    .player-row { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 8px 9px; border: 1px solid #2b3240; border-radius: 8px; background: #171b24; }
+    .player-row .marker { width: 8px; height: 8px; border-radius: 100%; background: var(--red); }
+    .player-row.self .marker { background: var(--mint); }
+    .player-name { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+    .player-health { color: var(--muted); font: 10px ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .empty { padding: 0 16px 15px; color: var(--muted); font-size: 11px; }
+    .event-panel { overflow: hidden; }
+    .event-list { display: grid; gap: 6px; max-height: 250px; overflow: auto; padding: 0 12px 12px; list-style: none; }
+    .event-item { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 8px; padding: 7px 8px; border-radius: 7px; background: #151922; color: #c9d0dc; font-size: 10px; }
+    .event-time { color: #758196; font: 10px ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .event-item.error { color: #ff9eaf; background: #2a1e25; }
+    .event-item.combat { color: #f3d08a; }
+    .event-text { overflow-wrap: anywhere; white-space: pre-wrap; }
+    .footnote { margin: 15px 2px 0; color: #818b9c; font-size: 11px; }
+
+    @media (max-width: 950px) {
+      .connection-panel { grid-template-columns: 1fr 1fr; }
+      .connection-actions { grid-column: span 2; }
+      .layout { grid-template-columns: minmax(0, 1.2fr) minmax(270px, .8fr); }
+    }
+    @media (max-width: 720px) {
+      .shell { width: min(100% - 22px, 560px); padding-top: 14px; }
+      .layout { grid-template-columns: 1fr; }
+      .header-pills { align-items: flex-end; flex-direction: column; }
+      .topbar { align-items: flex-start; }
+      .connection-panel { grid-template-columns: 1fr 1fr; padding: 11px; }
+      .field.server-field { grid-column: span 2; }
+      canvas { height: 350px; min-height: 300px; }
+      .control-bar { align-items: flex-start; flex-direction: column; }
+      .button-row { justify-content: flex-start; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">A/</div>
+        <div>
+          <div class="eyebrow">Authoritative simulation lab</div>
+          <h1>Aster TPS Gameplay Test</h1>
+          <p class="subtitle">Connect a browser session and inspect server-owned gameplay state.</p>
+        </div>
+      </div>
+      <div class="header-pills">
+        <div id="connectionStatus" class="status-pill" data-state="disconnected" role="status" aria-live="polite">
+          <span class="status-dot" aria-hidden="true"></span><span id="connectionText">Disconnected</span>
+        </div>
+        <div class="tick-pill">SERVER <span id="serverRateValue">—</span> HZ</div>
+        <div id="clientFpsPill" class="tick-pill">CLIENT <span id="clientFpsValue">—</span> FPS</div>
+        <div class="tick-pill">TICK <span id="tickValue">—</span></div>
+      </div>
+    </header>
+
+    <section class="panel connection-panel" aria-label="Connection settings">
+      <div class="field server-field">
+        <label for="serverUrl">WebSocket endpoint</label>
+        <input id="serverUrl" autocomplete="url" spellcheck="false">
+      </div>
+      <div class="field">
+        <label for="playerName">Player name</label>
+        <input id="playerName" value="Pilot" maxlength="24" autocomplete="nickname">
+      </div>
+      <div class="field">
+        <label for="roomId">Room ID <span class="micro-label">optional</span></label>
+        <input id="roomId" maxlength="64" placeholder="Auto join or create">
+      </div>
+      <div class="connection-actions">
+        <button id="connectButton" class="primary" type="button">Connect</button>
+        <button id="disconnectButton" type="button" disabled>Disconnect</button>
+      </div>
+    </section>
+
+    <div class="layout">
+      <section class="panel stage" aria-labelledby="arenaTitle">
+        <div class="section-title">
+          <h2 id="arenaTitle">Arena · server snapshot</h2>
+          <span id="roomLabel" class="micro-label">NOT IN ROOM</span>
+        </div>
+        <div class="canvas-wrap">
+          <canvas id="arena" aria-label="Top-down view of predicted local position and server-reported players and projectiles"></canvas>
+          <div class="canvas-caption">
+            <div class="legend" aria-label="Map legend">
+              <span class="legend-item"><i class="legend-dot"></i>You · predicted</span>
+              <span class="legend-item"><i class="legend-dot server-position"></i>Server position</span>
+              <span class="legend-item"><i class="legend-dot remote"></i>Other players</span>
+              <span class="legend-item"><i class="legend-dot projectile"></i>Projectiles</span>
+            </div>
+            <span>+Z ↑</span>
+          </div>
+        </div>
+        <div class="control-bar">
+          <div class="keyboard-help">
+            <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move · <kbd>Shift</kbd> sprint · <kbd>Space</kbd> jump<br>
+            <kbd>←</kbd><kbd>→</kbd> / <kbd>Q</kbd><kbd>E</kbd> turn · <kbd>F</kbd> attack · <kbd>R</kbd> respawn
+          </div>
+          <div class="button-row">
+            <button id="pingButton" type="button" disabled>Ping</button>
+            <button id="attackButton" type="button" disabled>Attack · F</button>
+            <button id="respawnButton" class="danger" type="button" disabled>Respawn · R</button>
+          </div>
+        </div>
+      </section>
+
+      <aside class="side-stack" aria-label="Gameplay telemetry">
+        <section class="panel">
+          <div class="section-title">
+            <h2>My character</h2>
+            <span id="stateChip" class="state-chip" data-state="idle">IDLE</span>
+          </div>
+          <div class="stats-body">
+            <div class="self-heading"><strong id="selfName">Waiting for join</strong><span id="entityId">ENTITY —</span></div>
+            <div class="health-line"><span>HEALTH</span><strong id="healthText">—</strong></div>
+            <div class="health-track" role="progressbar" aria-label="Player health" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <div id="healthFill" class="health-fill"></div>
+            </div>
+            <div class="stat-grid">
+              <div class="stat-cell"><span>SERVER POS · X / Y / Z</span><strong id="positionValue">—</strong></div>
+              <div class="stat-cell"><span>LOCAL PREDICTION · X / Z</span><strong id="predictedValue">—</strong></div>
+              <div class="stat-cell"><span>SERVER VELOCITY · X / Y / Z</span><strong id="velocityValue">—</strong></div>
+              <div class="stat-cell"><span>LOCAL YAW</span><strong id="yawValue">—</strong></div>
+              <div class="stat-cell"><span>INPUT ACK · DELAY</span><strong id="ackValue">—</strong></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="section-title"><h2>Room players</h2><span id="playerCount" class="micro-label">0 PLAYERS</span></div>
+          <div id="roster" class="roster" aria-live="polite"></div>
+          <p id="rosterEmpty" class="empty">Join a room to see the roster.</p>
+        </section>
+
+        <section class="panel event-panel">
+          <div class="section-title"><h2>Gameplay events</h2><button id="clearEvents" type="button" aria-label="Clear event log">Clear</button></div>
+          <ol id="eventList" class="event-list" aria-live="polite"></ol>
+        </section>
+      </aside>
+    </div>
+    <p class="footnote">Local X/Z movement is predicted with server-provided tuning and reconciled on snapshots. Collision and vertical physics, health, hits, and life state remain server authoritative.</p>
+  </main>
+
+  <script>
+    "use strict";
+
+    const $ = (id) => document.getElementById(id);
+    const canvas = $("arena");
+    const context = canvas.getContext("2d");
+    const pressed = new Set();
+    const players = new Map();
+    const projectiles = new Map();
+    const keysForMovement = new Set([
+      "KeyW", "KeyA", "KeyS", "KeyD", "ShiftLeft", "ShiftRight", "Space",
+      "ArrowLeft", "ArrowRight", "KeyQ", "KeyE",
+    ]);
+    let socket = null;
+    let playerId = null;
+    let entityId = null;
+    let roomId = null;
+    let sequence = 0;
+    let yaw = 0;
+    let latestTick = 0;
+    let tickRate = 60;
+    let movementTuning = null;
+    let authoritativeSelf = null;
+    let pendingInputs = [];
+    let lastAcknowledgedInput = -1;
+    let lastAckDelayMs = null;
+    let lastInputSentAt = 0;
+    let frameWindowStartedAt = null;
+    let renderedFrameCount = 0;
+    let inputTimer = null;
+    let pingTimer = null;
+    const turnRateDegreesPerSecond = 120;
+
+    const defaultSocketUrl = () => {
+      const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+      return location.host ? `${scheme}//${location.host}/ws` : "ws://127.0.0.1:8000/ws";
+    };
+    $("serverUrl").value = defaultSocketUrl();
+
+    function setConnection(state, message) {
+      $("connectionStatus").dataset.state = state;
+      $("connectionText").textContent = message;
+      const online = state === "connected";
+      $("connectButton").disabled = online || state === "connecting";
+      $("disconnectButton").disabled = !online && state !== "connecting";
+      for (const id of ["pingButton", "attackButton", "respawnButton"]) {
+        $(id).disabled = !online || !playerId;
+      }
+    }
+
+    function addEvent(message, kind = "") {
+      const item = document.createElement("li");
+      item.className = `event-item ${kind}`.trim();
+      const time = document.createElement("span");
+      time.className = "event-time";
+      time.textContent = new Date().toLocaleTimeString([], { hour12: false });
+      const content = document.createElement("span");
+      content.className = "event-text";
+      content.textContent = typeof message === "string" ? message : JSON.stringify(message);
+      item.append(time, content);
+      $("eventList").prepend(item);
+      while ($("eventList").children.length > 100) $("eventList").lastElementChild.remove();
+    }
+
+    function send(message) {
+      if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+      socket.send(JSON.stringify(message));
+      return true;
+    }
+
+    function connect() {
+      const url = $("serverUrl").value.trim();
+      if (!url) {
+        addEvent("Enter a WebSocket endpoint first.", "error");
+        return;
+      }
+      if (socket && socket.readyState < WebSocket.CLOSING) socket.close();
+      players.clear();
+      projectiles.clear();
+      playerId = null;
+      entityId = null;
+      roomId = null;
+      sequence = 0;
+      yaw = 0;
+      tickRate = 60;
+      $("serverRateValue").textContent = "—";
+      movementTuning = null;
+      authoritativeSelf = null;
+      pendingInputs = [];
+      lastAcknowledgedInput = -1;
+      lastAckDelayMs = null;
+      lastInputSentAt = 0;
+      setConnection("connecting", "Connecting…");
+      addEvent(`Connecting to ${url}`);
+
+      try {
+        socket = new WebSocket(url);
+      } catch (error) {
+        setConnection("error", "Invalid endpoint");
+        addEvent(String(error), "error");
+        return;
+      }
+
+      socket.addEventListener("open", () => {
+        setConnection("connected", "Connected · joining");
+        send({ type: "hello", protocol_version: 1 });
+      });
+      socket.addEventListener("message", (event) => {
+        let message;
+        try {
+          message = JSON.parse(event.data);
+        } catch {
+          addEvent("Server sent invalid JSON.", "error");
+          return;
+        }
+        handleMessage(message);
+      });
+      socket.addEventListener("error", () => {
+        setConnection("error", "Connection error");
+        addEvent("WebSocket connection failed.", "error");
+      });
+      socket.addEventListener("close", (event) => {
+        stopTimers();
+        pressed.clear();
+        playerId = null;
+        entityId = null;
+        roomId = null;
+        authoritativeSelf = null;
+        pendingInputs = [];
+        players.clear();
+        projectiles.clear();
+        $("roomLabel").textContent = "NOT IN ROOM";
+        setConnection("disconnected", event.reason || "Disconnected");
+        addEvent(`Disconnected (${event.code}) ${event.reason || ""}`.trim());
+      });
+    }
+
+    function handleMessage(message) {
+      if (message.type === "welcome") {
+        const tuning = message.movement_tuning;
+        const validTuning = tuning &&
+          [tuning.walk_speed, tuning.run_speed, tuning.sprint_speed, tuning.air_control].every(Number.isFinite) &&
+          tuning.walk_speed > 0 && tuning.run_speed >= tuning.walk_speed &&
+          tuning.sprint_speed >= tuning.run_speed && tuning.air_control >= 0 && tuning.air_control <= 1;
+        if (!Number.isInteger(message.tick_rate) || message.tick_rate < 60 || message.tick_rate > 120 || !validTuning) {
+          setConnection("error", "Server must support 60 Hz");
+          addEvent("Server must provide 60–120 Hz tick_rate and valid movement_tuning.", "error");
+          socket?.close(1002, "unsupported simulation rate or missing movement tuning");
+          return;
+        }
+        tickRate = message.tick_rate;
+        $("serverRateValue").textContent = String(tickRate);
+        movementTuning = message.movement_tuning;
+        addEvent(`Protocol ${message.protocol_version} · ${message.tick_rate} Hz`);
+        const room = $("roomId").value.trim();
+        send({
+          type: "join_game",
+          player_name: $("playerName").value.trim() || "Pilot",
+          ...(room ? { room_id: room } : {}),
+        });
+        return;
+      }
+      if (message.type === "joined") {
+        playerId = message.player_id;
+        entityId = message.entity_id;
+        roomId = message.room_id;
+        $("roomLabel").textContent = roomId.toUpperCase();
+        $("entityId").textContent = `ENTITY ${entityId}`;
+        setConnection("connected", "Connected · in room");
+        addEvent(`Joined ${roomId} as ${$("playerName").value.trim() || "Pilot"}`);
+        startTimers();
+        return;
+      }
+      if (message.type === "snapshot") {
+        latestTick = message.tick;
+        $("tickValue").textContent = latestTick;
+        players.clear();
+        projectiles.clear();
+        for (const player of message.players || []) players.set(player.player_id, player);
+        for (const projectile of message.projectiles || []) projectiles.set(projectile.projectile_id, projectile);
+        authoritativeSelf = players.get(playerId) || null;
+        if (authoritativeSelf) acknowledgeInputs(authoritativeSelf.last_processed_input);
+        renderSnapshot();
+        return;
+      }
+      if (message.type === "pong") {
+        addEvent(`Pong · nonce ${message.nonce ?? "—"}`);
+        return;
+      }
+      const isError = message.type === "error" || message.type?.endsWith("_rejected");
+      const isCombat = ["hit", "damage", "death", "fall_impact", "respawn"].includes(message.type);
+      addEvent(message, isError ? "error" : isCombat ? "combat" : "");
+      if (message.type === "error") setConnection("error", message.code || "Server error");
+    }
+
+    function startTimers() {
+      stopTimers();
+      inputTimer = window.setInterval(sendInput, 1000 / tickRate);
+      pingTimer = window.setInterval(() => send({ type: "ping", nonce: Date.now() }), 10000);
+      sendInput();
+    }
+
+    function stopTimers() {
+      if (inputTimer !== null) window.clearInterval(inputTimer);
+      if (pingTimer !== null) window.clearInterval(pingTimer);
+      inputTimer = null;
+      pingTimer = null;
+    }
+
+    function sendInput() {
+      if (!playerId) return;
+      const moveX = Number(pressed.has("KeyD")) - Number(pressed.has("KeyA"));
+      const moveZ = Number(pressed.has("KeyW")) - Number(pressed.has("KeyS"));
+      const turn = Number(pressed.has("ArrowRight") || pressed.has("KeyE")) -
+        Number(pressed.has("ArrowLeft") || pressed.has("KeyQ"));
+      const now = performance.now();
+      const elapsed = lastInputSentAt > 0 ? Math.min((now - lastInputSentAt) / 1000, 1 / tickRate) : 1 / tickRate;
+      yaw = ((yaw + turn * turnRateDegreesPerSecond * elapsed + 180) % 360 + 360) % 360 - 180;
+      const input = {
+        type: "input",
+        sequence,
+        move_x: moveX,
+        move_z: moveZ,
+        jump: pressed.has("Space"),
+        sprint: pressed.has("ShiftLeft") || pressed.has("ShiftRight"),
+        yaw,
+      };
+      if (!send(input)) return;
+      pendingInputs.push({ ...input, sentAt: now });
+      lastInputSentAt = now;
+      sequence++;
+      updatePredictedPosition();
+    }
+
+    function acknowledgeInputs(acknowledgedSequence) {
+      if (!Number.isInteger(acknowledgedSequence) || acknowledgedSequence <= lastAcknowledgedInput) return;
+      const acknowledged = pendingInputs.find((input) => input.sequence === acknowledgedSequence);
+      if (acknowledged) lastAckDelayMs = Math.max(0, performance.now() - acknowledged.sentAt);
+      pendingInputs = pendingInputs.filter((input) => input.sequence > acknowledgedSequence);
+      lastAcknowledgedInput = acknowledgedSequence;
+    }
+
+    function predictPosition() {
+      if (!authoritativeSelf) return null;
+      const position = [...authoritativeSelf.position];
+      if (!authoritativeSelf.alive || !movementTuning) return position;
+      const dt = 1 / tickRate;
+      for (const input of pendingInputs) {
+        const axisLength = Math.hypot(input.move_x, input.move_z);
+        const scale = axisLength > 1 ? 1 / axisLength : 1;
+        const moveX = input.move_x * scale;
+        const moveZ = input.move_z * scale;
+        const speed = input.sprint
+          ? movementTuning.sprint_speed
+          : axisLength > 0.72 ? movementTuning.run_speed : movementTuning.walk_speed;
+        const inAir = authoritativeSelf.state === "jump" || authoritativeSelf.state === "fall";
+        const control = inAir ? movementTuning.air_control : 1;
+        const angle = (Number(input.yaw) * Math.PI) / 180;
+        position[0] += speed * (moveX * Math.cos(angle) + moveZ * Math.sin(angle)) * control * dt;
+        position[2] += speed * (-moveX * Math.sin(angle) + moveZ * Math.cos(angle)) * control * dt;
+      }
+      return position;
+    }
+
+    function updatePredictedPosition() {
+      const position = predictPosition();
+      $("predictedValue").textContent = position ? `${position[0].toFixed(2)} / ${position[2].toFixed(2)}` : "—";
+    }
+
+    function attack() {
+      if (!send({ type: "attack" })) addEvent("Connect and join a room before attacking.", "error");
+    }
+
+    function respawn() {
+      if (!send({ type: "respawn" })) addEvent("Connect and join a room before requesting respawn.", "error");
+    }
+
+    function renderSnapshot() {
+      const self = players.get(playerId);
+      $("playerCount").textContent = `${players.size} PLAYER${players.size === 1 ? "" : "S"}`;
+      $("rosterEmpty").hidden = players.size > 0;
+      const roster = $("roster");
+      roster.replaceChildren();
+      for (const player of players.values()) {
+        const row = document.createElement("div");
+        row.className = `player-row ${player.player_id === playerId ? "self" : ""}`.trim();
+        const marker = document.createElement("span");
+        marker.className = "marker";
+        const name = document.createElement("span");
+        name.className = "player-name";
+        name.textContent = player.player_name || player.player_id;
+        const health = document.createElement("span");
+        health.className = "player-health";
+        health.textContent = `${Math.ceil(player.health)} HP`;
+        row.append(marker, name, health);
+        roster.append(row);
+      }
+      if (!self) return;
+      $("selfName").textContent = self.player_name || "Player";
+      $("stateChip").textContent = self.state.toUpperCase();
+      $("stateChip").dataset.state = self.state;
+      $("healthText").textContent = `${Math.ceil(self.health)} / ${Math.ceil(self.max_health)}`;
+      const healthRatio = self.max_health > 0 ? Math.max(0, Math.min(1, self.health / self.max_health)) : 0;
+      $("healthFill").style.width = `${healthRatio * 100}%`;
+      $("healthFill").classList.toggle("low", healthRatio <= 0.3);
+      $("healthFill").parentElement.setAttribute("aria-valuenow", String(Math.ceil(self.health)));
+      $("healthFill").parentElement.setAttribute("aria-valuemax", String(Math.ceil(self.max_health)));
+      $("positionValue").textContent = formatVector(self.position);
+      updatePredictedPosition();
+      $("velocityValue").textContent = formatVector(self.velocity);
+      $("yawValue").textContent = `${Number(yaw).toFixed(1)}°`;
+      const ackDelay = lastAckDelayMs === null ? "—" : `${Math.round(lastAckDelayMs)} ms`;
+      $("ackValue").textContent = `#${self.last_processed_input} · ${ackDelay}`;
+    }
+
+    function formatVector(vector) {
+      return (vector || []).map((value) => Number(value).toFixed(2)).join(" / ");
+    }
+
+    function resizeCanvas() {
+      const bounds = canvas.getBoundingClientRect();
+      const ratio = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = Math.max(1, Math.round(bounds.width * ratio));
+      canvas.height = Math.max(1, Math.round(bounds.height * ratio));
+      context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    }
+
+    function drawArena() {
+      const width = canvas.clientWidth;
+      const height = canvas.clientHeight;
+      if (!width || !height) return;
+      context.clearRect(0, 0, width, height);
+      const size = Math.min(width - 44, height - 40);
+      const left = (width - size) / 2;
+      const top = (height - size) / 2;
+      const scale = size / 50;
+      const point = (x, z) => [left + (x + 25) * scale, top + (25 - z) * scale];
+
+      context.fillStyle = "#111820";
+      context.fillRect(left, top, size, size);
+      context.strokeStyle = "#202b35";
+      context.lineWidth = 1;
+      for (let grid = -20; grid <= 20; grid += 5) {
+        const [gx] = point(grid, 0);
+        const [, gz] = point(0, grid);
+        context.beginPath(); context.moveTo(gx, top); context.lineTo(gx, top + size); context.stroke();
+        context.beginPath(); context.moveTo(left, gz); context.lineTo(left + size, gz); context.stroke();
+      }
+
+      context.fillStyle = "#27353a";
+      context.fillRect(point(-1.1, 1.1)[0], point(-1.1, 1.1)[1], 2.2 * scale, 2.2 * scale);
+      context.strokeStyle = "#51635f";
+      context.strokeRect(point(-1.1, 1.1)[0], point(-1.1, 1.1)[1], 2.2 * scale, 2.2 * scale);
+      context.fillStyle = "#2b343a";
+      for (let step = 0; step < 24; step++) {
+        const z = 5 + step * 0.5;
+        context.fillRect(point(-1.75, z + 0.4)[0], point(-1.75, z + 0.4)[1], 3.5 * scale, 0.8 * scale);
+      }
+      context.fillStyle = "#334047";
+      context.fillRect(point(-4, 20.5)[0], point(-4, 20.5)[1], 8 * scale, 5 * scale);
+      context.strokeStyle = "#73867f";
+      context.lineWidth = 2;
+      context.strokeRect(left, top, size, size);
+
+      for (const projectile of projectiles.values()) {
+        const [x, y] = point(projectile.position[0], projectile.position[2]);
+        context.beginPath(); context.arc(x, y, 3.3, 0, Math.PI * 2);
+        context.fillStyle = "#f5cc77"; context.fill();
+      }
+
+      for (const player of players.values()) {
+        const self = player.player_id === playerId;
+        const position = self ? predictPosition() || player.position : player.position;
+        const [x, y] = point(position[0], position[2]);
+        if (self) {
+          const [serverX, serverY] = point(player.position[0], player.position[2]);
+          context.beginPath(); context.arc(serverX, serverY, 10, 0, Math.PI * 2);
+          context.setLineDash([2, 3]); context.strokeStyle = "#77e0c1"; context.lineWidth = 1.5; context.stroke();
+          context.setLineDash([]);
+          context.beginPath(); context.moveTo(serverX, serverY); context.lineTo(x, y);
+          context.strokeStyle = "rgba(119, 224, 193, .45)"; context.lineWidth = 1; context.stroke();
+        }
+        context.beginPath(); context.arc(x, y, self ? 7 : 6, 0, Math.PI * 2);
+        context.fillStyle = self ? "#77e0c1" : player.alive ? "#ff8296" : "#697385";
+        context.fill();
+        context.lineWidth = self ? 2 : 1;
+        context.strokeStyle = self ? "#d4fff1" : "#ffe0e5";
+        context.stroke();
+        context.fillStyle = "#e9edf4";
+        context.font = "10px ui-monospace, monospace";
+        context.textAlign = "center";
+        context.fillText((player.player_name || "Player").slice(0, 12), x, y - 12);
+        if (self) {
+          const angle = (Number(yaw) * Math.PI) / 180;
+          context.beginPath(); context.moveTo(x, y); context.lineTo(x + Math.sin(angle) * 14, y - Math.cos(angle) * 14);
+          context.strokeStyle = "#ddfff4"; context.lineWidth = 2; context.stroke();
+        }
+      }
+    }
+
+    function keyboardTargetIsEditable(target) {
+      return target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "TEXTAREA"].includes(target.tagName));
+    }
+
+    window.addEventListener("keydown", (event) => {
+      if (keyboardTargetIsEditable(event.target)) return;
+      if (keysForMovement.has(event.code)) event.preventDefault();
+      if (!event.repeat && event.code === "KeyF") attack();
+      if (!event.repeat && event.code === "KeyR") respawn();
+      const wasPressed = pressed.has(event.code);
+      pressed.add(event.code);
+      if (!event.repeat && !wasPressed && keysForMovement.has(event.code)) sendInput();
+    });
+    window.addEventListener("keyup", (event) => {
+      const wasPressed = pressed.delete(event.code);
+      if (wasPressed && keysForMovement.has(event.code)) sendInput();
+    });
+    window.addEventListener("blur", () => {
+      if (pressed.size > 0) {
+        pressed.clear();
+        sendInput();
+      }
+    });
+    $("connectButton").addEventListener("click", connect);
+    $("disconnectButton").addEventListener("click", () => socket?.close(1000, "client disconnect"));
+    $("attackButton").addEventListener("click", attack);
+    $("respawnButton").addEventListener("click", respawn);
+    $("pingButton").addEventListener("click", () => send({ type: "ping", nonce: Date.now() }));
+    $("clearEvents").addEventListener("click", () => $("eventList").replaceChildren());
+    window.addEventListener("resize", resizeCanvas);
+    new ResizeObserver(resizeCanvas).observe(canvas);
+    resizeCanvas();
+    function renderFrame(now) {
+      drawArena();
+      if (frameWindowStartedAt === null) frameWindowStartedAt = now;
+      renderedFrameCount++;
+      const elapsed = now - frameWindowStartedAt;
+      if (elapsed >= 1000) {
+        const fps = Math.round(renderedFrameCount * 1000 / elapsed);
+        $("clientFpsValue").textContent = String(fps);
+        $("clientFpsPill").dataset.performance = fps >= 60 ? "ready" : "under";
+        renderedFrameCount = 0;
+        frameWindowStartedAt = now;
+      }
+      window.requestAnimationFrame(renderFrame);
+    }
+    window.requestAnimationFrame(renderFrame);
+    setConnection("disconnected", "Disconnected");
+    addEvent("Ready · connect to the gameplay server to begin.");
+  </script>
+</body>
+</html>

@@ -9,8 +9,8 @@ class Settings(BaseSettings):
 
     host: str = "127.0.0.1"
     port: int = Field(default=8000, ge=1, le=65535)
-    tick_rate: int = Field(default=30, ge=10, le=120)
-    snapshot_interval_ticks: int = Field(default=3, ge=1)
+    tick_rate: int = Field(default=60, ge=60, le=120)
+    snapshot_interval_ticks: int = Field(default=1, ge=1)
     max_rooms: int = Field(default=8, ge=1)
     max_players_per_room: int = Field(default=16, ge=2, le=16)
     heartbeat_timeout_seconds: float = Field(default=30.0, gt=1.0)
