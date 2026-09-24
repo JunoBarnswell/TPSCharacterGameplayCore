@@ -85,7 +85,7 @@ export function createPose(skeleton, localTransforms) {
   return new Pose(skeleton, localTransforms);
 }
 
-function quaternionMultiply(left, right) {
+export function quaternionMultiply(left, right) {
   const [ax, ay, az, aw] = left;
   const [bx, by, bz, bw] = right;
   return normalizeQuaternion([
@@ -96,7 +96,11 @@ function quaternionMultiply(left, right) {
   ]);
 }
 
-function rotateVector(rotation, value) {
+export function quaternionConjugate([x, y, z, w]) {
+  return [-x, -y, -z, w];
+}
+
+export function rotateVector(rotation, value) {
   const [x, y, z, w] = rotation;
   const [vx, vy, vz] = value;
   const tx = 2 * (y * vz - z * vy);
@@ -107,6 +111,36 @@ function rotateVector(rotation, value) {
     vy + w * ty + z * tx - x * tz,
     vz + w * tz + x * ty - y * tx,
   ];
+}
+
+export function quaternionFromTo(fromInput, toInput) {
+  const from = vector(fromInput, 3, "source axis");
+  const to = vector(toInput, 3, "target axis");
+  const fromLength = Math.hypot(...from);
+  const toLength = Math.hypot(...to);
+  if (!(fromLength > 1e-12) || !(toLength > 1e-12)) {
+    throw new RangeError("rotation axes must be non-zero");
+  }
+  const a = from.map((value) => value / fromLength);
+  const b = to.map((value) => value / toLength);
+  const dot = Math.max(-1, Math.min(1, a.reduce((sum, value, index) => sum + value * b[index], 0)));
+  if (dot > 0.999999) return [...IDENTITY_ROTATION];
+  if (dot < -0.999999) {
+    const axis = Math.abs(a[0]) < 0.9 ? [1, 0, 0] : [0, 0, 1];
+    const cross = [
+      a[1] * axis[2] - a[2] * axis[1],
+      a[2] * axis[0] - a[0] * axis[2],
+      a[0] * axis[1] - a[1] * axis[0],
+    ];
+    const crossLength = Math.hypot(...cross);
+    return normalizeQuaternion([...cross.map((value) => value / crossLength), 0]);
+  }
+  const cross = [
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0],
+  ];
+  return normalizeQuaternion([...cross, 1 + dot]);
 }
 
 export function quaternionSlerp(leftInput, rightInput, alphaInput) {

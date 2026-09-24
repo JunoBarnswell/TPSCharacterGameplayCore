@@ -22,8 +22,6 @@ import {
 import {
   createMotionFrame,
   MotionHistory,
-  PoseHistory,
-  predictTrajectory,
 } from "../aster_game/web/motion/motion-frame.mjs";
 import {
   evaluateAnimationGraph,
@@ -32,7 +30,16 @@ import {
 import { BlendWeightSmoothing } from "../aster_game/web/animation/blend-weight-smoothing.mjs";
 import { evaluateBlendSpace } from "../aster_game/web/animation/blend-space.mjs";
 import { evaluateAimOffset } from "../aster_game/web/animation/aim-offset.mjs";
-import { orientationWarpAngle } from "../aster_game/web/animation/orientation-warp.mjs";
+import { orientationWarpAngle, warpPoseOrientation } from "../aster_game/web/animation/orientation-warp.mjs";
+import { solveFootIK, FootLockState } from "../aster_game/web/animation/foot-ik.mjs";
+import { applyVisualRootOffset } from "../aster_game/web/animation/root-offset.mjs";
+import { applyRootMotionDelta, extractRootMotionDelta } from "../aster_game/web/animation/root-motion.mjs";
+import { MotionWarpTarget, warpRootMotionDelta } from "../aster_game/web/animation/motion-warp.mjs";
+import { PoseHistory } from "../aster_game/web/animation/motion-matching/pose-history.mjs";
+import { PoseDatabase } from "../aster_game/web/animation/motion-matching/pose-database.mjs";
+import { PoseSearch } from "../aster_game/web/animation/motion-matching/pose-search.mjs";
+import { MotionMatcher } from "../aster_game/web/animation/motion-matching/motion-matcher.mjs";
+import { rolloutTrajectory } from "../aster_game/web/motion/trajectory.mjs";
 import {
   AnimationClip,
   AnimationTrack,
@@ -48,6 +55,7 @@ import {
   createPose,
   Pose,
   quaternionSlerp,
+  rotateVector,
   worldTransforms,
 } from "../aster_game/web/animation/pose.mjs";
 import { PoseInertializer } from "../aster_game/web/animation/pose-inertializer.mjs";
@@ -158,6 +166,36 @@ function input(sequence, moveZ = 1) {
   };
 }
 
+function createMotionRig() {
+  const skeleton = createSkeleton([
+    { name: "root", parentIndex: -1 },
+    { name: "pelvis", parentIndex: 0, bindLocal: createTransform([0, 1, 0]) },
+    { name: "spine", parentIndex: 1, bindLocal: createTransform([0, 0.3, 0]) },
+    { name: "left_foot", parentIndex: 1, bindLocal: createTransform([-0.2, -1, 0]) },
+    { name: "right_foot", parentIndex: 1, bindLocal: createTransform([0.2, -1, 0]) },
+    { name: "chest", parentIndex: 2, bindLocal: createTransform([0, 0.3, 0]) },
+  ]);
+  const makePose = ({
+    rootPosition = [0, 0, 0],
+    rootYaw = 0,
+    pelvis = [0, 1, 0],
+    leftFoot = [-0.2, -1, 0],
+    rightFoot = [0.2, -1, 0],
+    chest = [0, 0.6, 0],
+  } = {}) => {
+    const yaw = rootYaw * Math.PI / 360;
+    return createPose(skeleton, [
+      createTransform(rootPosition, [0, Math.sin(yaw), 0, Math.cos(yaw)]),
+      createTransform(pelvis),
+      createTransform([0, 0.3, 0]),
+      createTransform(leftFoot),
+      createTransform(rightFoot),
+      createTransform(chest.map((value, axis) => axis === 1 ? value - 0.3 : value)),
+    ]);
+  };
+  return { skeleton, makePose };
+}
+
 test("movement acceleration and braking match the authoritative solver", () => {
   const first = solveHorizontalVelocity([0, 0, 0], [0, 0, 6.5], dt, true, tuning);
   assert.ok(first.velocity[2] > 0 && first.velocity[2] < tuning.sprint_speed);
@@ -209,10 +247,77 @@ test("JavaScript solver matches the shared Python movement golden vectors", () =
   assert.ok(Math.abs(solvedRotation.angularVelocity - rotation.expected_angular_velocity) < 1e-10);
 });
 
-function assertVector(actual, expected, label) {
+test("shared solver remains within drift tolerance over 10, 30, and 60 second motion sequences", () => {
+  const scenario = JSON.parse(readFileSync(
+    new URL("./fixtures/movement-drift-vectors.json", import.meta.url),
+    "utf8",
+  ));
+  const durations = new Set(scenario.durations_seconds);
+  const velocity = [0, 0, 0];
+  const position = [0, 0, 0];
+  let acceleration = [0, 0, 0];
+  let characterYaw = 0;
+  let angularVelocity = 0;
+  const actual = {};
+  const maximumTicks = Math.max(...scenario.durations_seconds) / scenario.dt;
+  for (let tick = 1; tick <= maximumTicks; tick++) {
+    const segmentIndex = Math.floor((tick - 1) / scenario.phase_ticks) % scenario.segments.length;
+    const segment = scenario.segments[segmentIndex];
+    const desired = desiredMotion(segment, goldenVectors.tuning);
+    const solved = solveHorizontalVelocity(
+      velocity,
+      desired.velocity,
+      scenario.dt,
+      true,
+      goldenVectors.tuning,
+      segment.requested_gait,
+    );
+    velocity.splice(0, 3, ...solved.velocity);
+    acceleration = solved.acceleration;
+    position[0] += velocity[0] * scenario.dt;
+    position[2] += velocity[2] * scenario.dt;
+    let desiredYaw = characterYaw;
+    if (segment.rotation_mode === "aim" || segment.rotation_mode === "strafe") {
+      desiredYaw = segment.view_yaw;
+    } else if (Math.hypot(segment.move_x, segment.move_z) > 1e-4) {
+      desiredYaw = Math.atan2(desired.velocity[0], desired.velocity[2]) * 180 / Math.PI;
+    }
+    const rotation = solveRotation(
+      characterYaw,
+      angularVelocity,
+      desiredYaw,
+      scenario.dt,
+      goldenVectors.tuning,
+    );
+    characterYaw = rotation.yaw;
+    angularVelocity = rotation.angularVelocity;
+    const seconds = tick * scenario.dt;
+    if (!durations.has(seconds)) continue;
+    actual[seconds] = {
+      position: [position[0], position[2]],
+      velocity: [velocity[0], velocity[2]],
+      acceleration: [acceleration[0], acceleration[2]],
+      yaw: characterYaw,
+      yaw_rate: angularVelocity,
+      actual_gait: deriveActualGait(Math.hypot(velocity[0], velocity[2]), goldenVectors.tuning),
+    };
+  }
+  assert.deepEqual(Object.keys(actual).map(Number), scenario.durations_seconds);
+  for (const seconds of scenario.durations_seconds) {
+    const expected = scenario.expected[String(seconds)];
+    for (const field of ["position", "velocity", "acceleration"]) {
+      assertVector(actual[seconds][field], expected[field], `${seconds}s ${field}`, scenario.tolerance);
+    }
+    assert.ok(Math.abs(actual[seconds].yaw - expected.yaw) <= scenario.tolerance, `${seconds}s yaw`);
+    assert.ok(Math.abs(actual[seconds].yaw_rate - expected.yaw_rate) <= scenario.tolerance, `${seconds}s yaw rate`);
+    assert.equal(actual[seconds].actual_gait, expected.actual_gait, `${seconds}s gait`);
+  }
+});
+
+function assertVector(actual, expected, label, tolerance = 1e-9) {
   assert.equal(actual.length, expected.length, label);
   for (let index = 0; index < expected.length; index++) {
-    assert.ok(Math.abs(actual[index] - expected[index]) <= 1e-9, `${label}[${index}]`);
+    assert.ok(Math.abs(actual[index] - expected[index]) <= tolerance, `${label}[${index}]`);
   }
 }
 
@@ -563,7 +668,7 @@ test("collision prediction steps up a low box and lands after falling", () => {
   assert.ok(["soft_land", "normal_land", "heavy_land"].includes(state.locomotion_phase));
 });
 
-test("MotionFrame, trajectory and bounded motion history carry animation inputs", () => {
+test("MotionFrame carries animation channels and bounded motion history", () => {
   const state = {
     ...idleState(),
     velocity: [1, 0, 2],
@@ -587,15 +692,11 @@ test("MotionFrame, trajectory and bounded motion history carry animation inputs"
   assert.deepEqual(frame.actionLayers, ["hit_reaction"]);
   assert.equal(frame.footIK.leftFootGroundDistance, null);
   assert.ok(Math.abs(frame.movementDirection - (Math.atan2(1, 2) * 180 / Math.PI - 15)) < 1e-9);
-  assert.deepEqual(predictTrajectory(frame).map((sample) => sample.time), [0.2, 0.4, 0.6, 0.8, 1]);
   const motionHistory = new MotionHistory(2);
-  const poseHistory = new PoseHistory(1);
   motionHistory.push(frame);
   motionHistory.push(frame);
   motionHistory.push(frame);
-  poseHistory.push(frame);
   assert.equal(motionHistory.latest().length, 2);
-  assert.equal(poseHistory.latest().length, 1);
 });
 
 test("animation graph returns normalized blend, additive aim, and warp semantics", () => {
@@ -838,4 +939,239 @@ test("pose animation graph evaluates motion weights, additive aim, and action po
     "test-hit", "action:shoot", "action:hit_reaction",
   ]);
   assert.ok(graph.pose.localTransforms[1].translation[1] > 0);
+});
+
+test("foot IK follows locked world contacts on uneven ground and aligns the foot to the slope", () => {
+  const { makePose } = createMotionRig();
+  const pose = makePose();
+  const lock = new FootLockState();
+  const lockedLeft = lock.lock("left", [0, 0.1, 0.2]);
+  assert.deepEqual(lock.lock("left", [9, 9, 9]), lockedLeft);
+  const rightLock = lock.lock("right", [0.2, 0.3, 0]);
+  const probes = {
+    left: { grounded: true, position: [8, 8, 8], lockedPosition: lockedLeft, normal: [0, 1, 0.5] },
+    right: { grounded: true, position: [8, 8, 8], lockedPosition: rightLock, normal: [0, 1, 0] },
+  };
+  const result = solveFootIK(pose, probes);
+  const worlds = worldTransforms(result.pose);
+  const left = worlds[pose.skeleton.indexByName.get("left_foot")];
+  const right = worlds[pose.skeleton.indexByName.get("right_foot")];
+  for (let axis = 0; axis < 3; axis++) {
+    assert.ok(Math.abs(left.translation[axis] - lockedLeft[axis]) < 1e-8);
+    assert.ok(Math.abs(right.translation[axis] - rightLock[axis]) < 1e-8);
+  }
+  const expectedNormal = [0, 1 / Math.sqrt(1.25), 0.5 / Math.sqrt(1.25)];
+  const actualNormal = rotateVector(left.rotation, [0, 1, 0]);
+  for (let axis = 0; axis < 3; axis++) assert.ok(Math.abs(actualNormal[axis] - expectedNormal[axis]) < 1e-8);
+  assert.ok(Math.abs(result.pelvisOffset - 0.1) < 1e-8);
+  assert.deepEqual(result.footNormals.left, expectedNormal);
+  lock.release("left");
+  assert.equal(lock.target("left"), null);
+  assert.deepEqual(lock.target("right"), rightLock);
+});
+
+test("orientation warp distributes yaw through the synthetic skeleton pose", () => {
+  const { makePose, skeleton } = createMotionRig();
+  const result = warpPoseOrientation(makePose(), 90, 0, {
+    root: 0.1,
+    pelvis: 0.15,
+    spine: 0.2,
+    left_foot: 0.15,
+    right_foot: 0.15,
+    chest: 0.25,
+  });
+  const worlds = worldTransforms(result.pose);
+  const yawOf = (rotation) => 2 * Math.atan2(rotation[1], rotation[3]) * 180 / Math.PI;
+  assert.equal(result.warpAngle, 90);
+  assert.ok(Math.abs(yawOf(worlds[skeleton.indexByName.get("root")].rotation) - 9) < 1e-8);
+  assert.ok(Math.abs(yawOf(worlds[skeleton.indexByName.get("pelvis")].rotation) - 22.5) < 1e-8);
+  assert.ok(Math.abs(yawOf(worlds[skeleton.indexByName.get("spine")].rotation) - 40.5) < 1e-8);
+  assert.ok(Math.abs(yawOf(worlds[skeleton.indexByName.get("chest")].rotation) - 63) < 1e-8);
+  assert.ok(Math.abs(yawOf(worlds[skeleton.indexByName.get("left_foot")].rotation) - 36) < 1e-8);
+  assert.throws(() => warpPoseOrientation(makePose(), 90, 0, { root: 0.5 }), /sum to one/);
+  assert.throws(() => warpPoseOrientation(makePose(), 0, 0, { root: 1, missing: 0 }), /missing/);
+});
+
+test("visual root offset remains bounded and root motion maps clip-local deltas into simulation facing", () => {
+  const { makePose } = createMotionRig();
+  const displaced = makePose({ rootPosition: [3, 2, 0] });
+  const offset = applyVisualRootOffset(displaced, [0, 0, 0], { maxOffset: 5 });
+  const alignedRoot = worldTransforms(offset.pose)[0].translation;
+  assert.deepEqual(alignedRoot, [0, 0, 0]);
+  assert.equal(offset.clamped, false);
+  const clamped = applyVisualRootOffset(displaced, [0, 0, 0], { maxOffset: 0.5 });
+  assert.equal(clamped.clamped, true);
+  assert.ok(Math.abs(Math.hypot(...clamped.offset) - 0.5) < 1e-8);
+
+  const previous = makePose({ rootYaw: 90 });
+  const current = makePose({ rootPosition: [0, 0, -1], rootYaw: 120 });
+  const rootDelta = extractRootMotionDelta(previous, current);
+  assert.ok(Math.abs(rootDelta.translation[0] - 1) < 1e-8);
+  assert.ok(Math.abs(rootDelta.translation[2]) < 1e-8);
+  assert.ok(Math.abs(rootDelta.yawDelta - 30) < 1e-8);
+  const applied = applyRootMotionDelta({ position: [10, 2, 10], character_yaw: 90 }, rootDelta);
+  assert.ok(Math.abs(applied.position[0] - 10) < 1e-8);
+  assert.ok(Math.abs(applied.position[1] - 2) < 1e-8);
+  assert.ok(Math.abs(applied.position[2] - 9) < 1e-8);
+  assert.equal(applied.character_yaw, 120);
+});
+
+test("root motion warping distributes endpoint correction across a synthetic traversal clip", () => {
+  const target = new MotionWarpTarget("vault-landing", [8, 0, 0], 0);
+  let current = [0, 0, 0];
+  const warpedSteps = [];
+  for (const remainingX of [3, 2, 1, 0]) {
+    const result = warpRootMotionDelta(
+      { translation: [1, 0, 0], yawDelta: 0 },
+      { position: current, character_yaw: 0 },
+      [remainingX, 0, 0],
+      target,
+    );
+    warpedSteps.push(result.translation[0]);
+    current = current.map((value, axis) => value + result.translation[axis]);
+  }
+  assert.ok(warpedSteps.every((step) => step > 1));
+  assert.ok(Math.abs(current[0] - target.position[0]) < 1e-8);
+});
+
+test("root motion warping transforms clip-local deltas before solving a world-space target", () => {
+  const target = new MotionWarpTarget("sideways-vault-landing", [8, 0, 0], 90);
+  let transform = { position: [0, 0, 0], character_yaw: 90 };
+  for (const remainingZ of [3, 2, 1, 0]) {
+    const delta = warpRootMotionDelta(
+      { translation: [0, 0, 1], yawDelta: 0 },
+      transform,
+      [0, 0, remainingZ],
+      target,
+    );
+    transform = applyRootMotionDelta(transform, delta);
+  }
+  assert.ok(Math.abs(transform.position[0] - target.position[0]) < 1e-8);
+  assert.ok(Math.abs(transform.position[2] - target.position[2]) < 1e-8);
+  assert.equal(transform.character_yaw, target.yaw);
+});
+
+test("trajectory rollout replays future intent through the collision solver", () => {
+  const wallWorld = new CollisionWorld({
+    version: 1,
+    planes: [{ name: "floor", normal: [0, 1, 0], constant: 0 }],
+    boxes: [{ name: "wall", center: [0, 1, 3], half_extents: [2, 1, 0.1] }],
+    ramps: [],
+  });
+  const start = { ...idleState(), position: [0, 0.9, 0], ground_contact_point: [0, 0, 0] };
+  const samples = rolloutTrajectory(start, input(1), collisionTuning, dt, wallWorld, [0.2, 0.5, 1]);
+  assert.equal(samples.length, 3);
+  assert.ok(samples[0].position[2] < samples[1].position[2]);
+  assert.ok(samples[1].position[2] <= samples[2].position[2]);
+  assert.ok(samples[2].position[2] <= 2.46);
+  assert.equal(samples[2].movementMode, "grounded");
+
+  const openWorld = new CollisionWorld({ version: 1, planes: [], boxes: [], ramps: [] });
+  const reverseIntent = (elapsed) => input(0, elapsed < 0.45 ? 1 : -1);
+  const reversed = rolloutTrajectory(start, reverseIntent, collisionTuning, dt, openWorld, [0.4, 1]);
+  const continued = rolloutTrajectory(start, input(0), collisionTuning, dt, openWorld, [0.4, 1]);
+  assert.ok(reversed[1].position[2] < continued[1].position[2]);
+  assert.equal(reversed[0].time, 0.4);
+});
+
+test("pose history stores sampled bones and pose search selects trajectory-consistent synthetic motion", () => {
+  const { makePose } = createMotionRig();
+  const trajectoryFor = (z, speed, facing = 0) => [{
+    time: 0.2,
+    position: [0, 0, z],
+    velocity: [0, 0, speed],
+    facing,
+  }];
+  const makeCandidate = (clipName, pose, velocity, trajectory, timeSeconds = 0) => {
+    const history = new PoseHistory(2);
+    return history.push(pose, {
+      tick: 1,
+      rootVelocity: velocity,
+      trajectory,
+      clipName,
+      timeSeconds,
+    });
+  };
+  const idlePose = makePose();
+  const runPose = makePose({ leftFoot: [-0.2, -1, 0.2], rightFoot: [0.2, -1, -0.2] });
+  const pivotPose = makePose({ rootYaw: 180, leftFoot: [-0.2, -1, -0.25], rightFoot: [0.2, -1, 0.25] });
+  const samples = [
+    makeCandidate("idle", idlePose, [0, 0, 0], trajectoryFor(0, 0)),
+    makeCandidate("run-forward", runPose, [0, 0, 3], trajectoryFor(0.6, 3)),
+    makeCandidate("pivot-back", pivotPose, [0, 0, -2], trajectoryFor(-0.4, -2, 180)),
+  ];
+  const database = new PoseDatabase(samples.map((sample) => ({
+    id: sample.id,
+    clipName: sample.clipName,
+    timeSeconds: sample.timeSeconds,
+    pose: sample.pose,
+    features: sample.features,
+  })));
+  const inconsistentFeatures = {
+    ...samples[0].features,
+    vector: samples[0].features.vector.map((value, index) => value + Number(index === 0)),
+  };
+  assert.throws(() => new PoseDatabase([{
+    ...samples[0], id: "idle-inconsistent", features: inconsistentFeatures,
+  }]), /match its structured features/);
+  const otherSkeletonPose = createMotionRig().makePose();
+  assert.throws(() => new PoseDatabase([
+    ...samples.slice(0, 1),
+    { ...samples[0], id: "idle-other-skeleton", pose: otherSkeletonPose },
+  ]), /one skeleton instance/);
+  const matcher = new MotionMatcher(new PoseSearch(database), { candidateLimit: 3 });
+  assert.throws(() => matcher.update({
+    pose: otherSkeletonPose,
+    rootVelocity: [0, 0, 0],
+    trajectory: trajectoryFor(0, 0),
+  }), /database skeleton/);
+  const selectedRun = matcher.update({
+    pose: runPose,
+    rootVelocity: [0, 0, 3],
+    trajectory: trajectoryFor(0.6, 3),
+  });
+  assert.equal(selectedRun.selectedClip, "run-forward");
+  assert.equal(selectedRun.candidateCount, 3);
+  assert.equal(selectedRun.transitionReason, "initial_pose_match");
+  assert.equal(selectedRun.costs.total, 0);
+  const selectedPivot = matcher.update({
+    pose: pivotPose,
+    rootVelocity: [0, 0, -2],
+    trajectory: trajectoryFor(-0.4, -2, 180),
+  });
+  assert.equal(selectedPivot.selectedClip, "pivot-back");
+  assert.equal(selectedPivot.transitionReason, "lower_weighted_motion_cost");
+  assert.throws(() => new PoseSearch(database, { approximate: 1 }), /unknown pose search cost/);
+  assert.throws(() => database.candidates[0].features.vector.push(1), TypeError);
+
+  const history = new PoseHistory(2);
+  assert.throws(() => new PoseHistory(2, ["root", "pelvis", "foot_l", "foot_r"]), /left_foot/);
+  history.push(makePose(), {
+    tick: 1, rootVelocity: [0, 0, 0], clipName: "history", timeSeconds: 0,
+  });
+  const moved = makePose({ leftFoot: [-0.2, -1, 0.1] });
+  const second = history.push(moved, {
+    tick: 2, rootVelocity: [0, 0, 1], clipName: "history", timeSeconds: dt, dt,
+  });
+  assert.deepEqual(
+    second.bonePositions.left_foot,
+    worldTransforms(moved)[moved.skeleton.indexByName.get("left_foot")].translation,
+  );
+  assert.ok(second.features.leftFootVelocity[2] > 0);
+  assert.throws(() => second.bonePositions.left_foot.push(10), TypeError);
+  assert.throws(() => second.features.vector.push(10), TypeError);
+  assert.equal(history.latest(0).length, 0);
+  assert.throws(() => history.push(moved, {
+    tick: 2, rootVelocity: [0, 0, 0], clipName: "history", timeSeconds: 0.1,
+  }), /monotonically/);
+  assert.throws(() => history.push(moved, {
+    tick: 2.5, rootVelocity: [0, 0, 0], clipName: "history", timeSeconds: 0.2,
+  }), /invalid/);
+  assert.throws(() => history.push(moved, {
+    tick: 3, rootVelocity: [0, 0, 0], clipName: "history", timeSeconds: 0.2, dt: Infinity,
+  }), /invalid/);
+  history.push(makePose({ rootPosition: [0, 0, 1] }), {
+    tick: 3, rootVelocity: [0, 0, 1], clipName: "history", timeSeconds: 2 * dt,
+  });
+  assert.deepEqual(history.latest().map(({ tick }) => tick), [2, 3]);
 });

@@ -83,15 +83,3 @@ export class MotionHistory {
     return this.frames.slice(-count);
   }
 }
-
-export class PoseHistory extends MotionHistory {}
-
-export function predictTrajectory(frame, seconds = [0.2, 0.4, 0.6, 0.8, 1.0]) {
-  return seconds.map((time) => ({
-    time,
-    position: frame.velocity.map((velocity, axis) =>
-      frame.position[axis] + velocity * time + 0.5 * frame.acceleration[axis] * time * time),
-    facing: frame.characterYaw + frame.yawRate * time,
-    velocity: frame.velocity.map((velocity, axis) => velocity + frame.acceleration[axis] * time),
-  }));
-}

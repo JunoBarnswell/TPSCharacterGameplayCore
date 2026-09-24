@@ -1,4 +1,4 @@
-import { createTransform, Pose, quaternionSlerp } from "./pose.mjs";
+import { createTransform, Pose, quaternionMultiply, quaternionSlerp } from "./pose.mjs";
 
 export const AnimationLayerChannel = Object.freeze({
   UPPER_BODY_ACTION: "upper_body_action",
@@ -82,17 +82,9 @@ function applyLayer(basePose, layer) {
     if (layer.mode !== "additive") throw new TypeError(`unsupported animation blend mode '${layer.mode}'`);
     const identity = [0, 0, 0, 1];
     const additiveRotation = quaternionSlerp(identity, source.rotation, weight);
-    const [ax, ay, az, aw] = base.rotation;
-    const [bx, by, bz, bw] = additiveRotation;
-    const rotation = [
-      aw * bx + ax * bw + ay * bz - az * by,
-      aw * by - ax * bz + ay * bw + az * bx,
-      aw * bz + ax * by - ay * bx + az * bw,
-      aw * bw - ax * bx - ay * by - az * bz,
-    ];
     return createTransform(
       base.translation.map((value, axis) => value + source.translation[axis] * weight),
-      rotation,
+      quaternionMultiply(base.rotation, additiveRotation),
       base.scale.map((value, axis) => value * (1 + (source.scale[axis] - 1) * weight)),
     );
   });

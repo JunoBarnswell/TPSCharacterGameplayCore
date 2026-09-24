@@ -1,19 +1,10 @@
-import { createTransform, Pose, quaternionSlerp } from "./pose.mjs";
-
-function quaternionConjugate([x, y, z, w]) {
-  return [-x, -y, -z, w];
-}
-
-function quaternionMultiply(left, right) {
-  const [ax, ay, az, aw] = left;
-  const [bx, by, bz, bw] = right;
-  return [
-    aw * bx + ax * bw + ay * bz - az * by,
-    aw * by - ax * bz + ay * bw + az * bx,
-    aw * bz + ax * by - ay * bx + az * bw,
-    aw * bw - ax * bx - ay * by - az * bz,
-  ];
-}
+import {
+  createTransform,
+  Pose,
+  quaternionConjugate,
+  quaternionMultiply,
+  quaternionSlerp,
+} from "./pose.mjs";
 
 function dampingFactor(elapsedSeconds, halfLifeSeconds) {
   const omega = 1.67834699001666 / halfLifeSeconds;
