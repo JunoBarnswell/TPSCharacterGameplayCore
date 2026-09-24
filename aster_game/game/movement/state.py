@@ -89,6 +89,7 @@ class CharacterMovementState:
     aim_pitch: float = 0.0
     rotation_mode: RotationMode = RotationMode.ORIENT_TO_MOVEMENT
     locomotion_phase: LocomotionPhase = LocomotionPhase.IDLE
+    turn_direction: str = "none"
     move_x: float = 0.0
     move_z: float = 0.0
     jump_held: bool = False
@@ -100,6 +101,8 @@ class CharacterMovementState:
     previous_position: tuple[float, float, float] = (0.0, 0.0, 0.0)
     previous_horizontal_velocity: tuple[float, float] = (0.0, 0.0)
     previous_desired_velocity: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    phase_start_tick: int = 0
+    phase_duration_ticks: int = 0
     phase_until_tick: int = 0
     landing_recovery_until_tick: int = 0
     turn_angle: float = 0.0

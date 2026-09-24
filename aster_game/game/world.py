@@ -12,7 +12,13 @@ from aster_game.game.components import (
     TransformComponent,
 )
 from aster_game.game.events import DamageRequest, EventBus, GameplayEvent, ResolvedDamage
-from aster_game.game.movement.state import ActionLayer, CharacterMovementState, LifeState
+from aster_game.game.movement.solver import angle_delta
+from aster_game.game.movement.state import (
+    ActionLayer,
+    CharacterMovementState,
+    LifeState,
+    LocomotionPhase,
+)
 from aster_game.game.physics import PhysicsWorld
 from aster_game.infrastructure.metrics import RuntimeMetrics
 
@@ -298,9 +304,54 @@ class GameWorld:
                 "aim_pitch": character.movement.aim_pitch,
                 "rotation_mode": character.movement.rotation_mode.value,
                 "locomotion_phase": character.movement.locomotion_phase.value,
+                "phase_start_tick": character.movement.phase_start_tick,
+                "phase_duration_ticks": character.movement.phase_duration_ticks,
+                "phase_progress": (
+                    max(
+                        0.0,
+                        min(
+                            1.0,
+                            (self.tick_id - character.movement.phase_start_tick)
+                            / character.movement.phase_duration_ticks,
+                        ),
+                    )
+                    if character.movement.phase_duration_ticks > 0
+                    else 0.0
+                ),
                 "phase_until_tick": character.movement.phase_until_tick,
                 "landing_recovery_until_tick": character.movement.landing_recovery_until_tick,
                 "turn_angle": character.movement.turn_angle,
+                "turn_direction": (
+                    character.movement.turn_direction
+                    if character.movement.locomotion_phase is LocomotionPhase.TURN_IN_PLACE
+                    else "none"
+                ),
+                "remaining_turn_angle": (
+                    angle_delta(
+                        character.movement.desired_facing_yaw,
+                        character.movement.character_yaw,
+                    )
+                    if character.movement.locomotion_phase is LocomotionPhase.TURN_IN_PLACE
+                    else 0.0
+                ),
+                "turn_progress": (
+                    max(
+                        0.0,
+                        min(
+                            1.0,
+                            1.0
+                            - abs(
+                                angle_delta(
+                                    character.movement.desired_facing_yaw,
+                                    character.movement.character_yaw,
+                                )
+                            )
+                            / max(1.0, character.movement.turn_angle),
+                        ),
+                    )
+                    if character.movement.locomotion_phase is LocomotionPhase.TURN_IN_PLACE
+                    else 0.0
+                ),
                 "landing_impact_velocity": character.fall.impact_velocity,
                 "jump_held": character.movement.jump_held,
                 "action_layer": character.action_layer.value,

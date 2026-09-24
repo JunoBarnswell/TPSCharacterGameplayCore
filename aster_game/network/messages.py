@@ -133,7 +133,7 @@ class CollisionWorldProfile(WireModel):
 class WelcomeMessage(WireModel):
     type: Literal["welcome"] = "welcome"
     session_id: str
-    protocol_version: int = 4
+    protocol_version: int = 5
     tick_rate: int
     snapshot_interval_ticks: int
     movement_tuning: MovementTuning
@@ -194,9 +194,15 @@ class PlayerSnapshot(WireModel):
     aim_pitch: float
     rotation_mode: str
     locomotion_phase: str
+    phase_start_tick: int
+    phase_duration_ticks: int = Field(ge=0)
+    phase_progress: float = Field(ge=0.0, le=1.0)
     phase_until_tick: int
     landing_recovery_until_tick: int
     turn_angle: float
+    turn_direction: Literal["none", "left", "right"]
+    remaining_turn_angle: float
+    turn_progress: float = Field(ge=0.0, le=1.0)
     landing_impact_velocity: float
     jump_held: bool
     action_layer: str

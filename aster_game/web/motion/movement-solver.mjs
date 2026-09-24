@@ -210,13 +210,25 @@ export function predictMovementStep(state, input, tuning, dt, collisionWorld = n
   let nextGrounded = grounded;
   let phase = state.locomotion_phase;
   let phaseUntilTick = Number(state.phase_until_tick ?? 0);
+  let phaseStartTick = Number(state.phase_start_tick ?? simulationTick);
+  let phaseDurationTicks = Number(state.phase_duration_ticks ?? 0);
   let landingRecoveryUntilTick = Number(state.landing_recovery_until_tick ?? 0);
+  let turnAngle = Number(state.turn_angle ?? 0);
+  let turnDirection = state.turn_direction ?? "none";
+  const setPhase = (next, durationTicks = 0) => {
+    if (next !== phase || (durationTicks > 0 && simulationTick >= phaseUntilTick)) {
+      phaseStartTick = simulationTick;
+      phaseDurationTicks = durationTicks;
+    }
+    phase = next;
+    if (durationTicks > 0) phaseUntilTick = simulationTick + durationTicks;
+  };
   const previousHorizontalSpeed = Math.hypot(state.velocity[0], state.velocity[2]);
   const previousDesired = state.desired_velocity ?? [0, 0, 0];
   if (jumpPressed) {
     vy = tuning.jump_speed;
     nextGrounded = false;
-    phase = "jump_start";
+    setPhase("jump_start", Math.max(1, Math.ceil(0.2 / dt)));
     state = {
       ...state,
       jump_available_tick: simulationTick + Math.ceil(tuning.jump_cooldown_seconds / dt),
@@ -226,10 +238,10 @@ export function predictMovementStep(state, input, tuning, dt, collisionWorld = n
     vy = Math.max(-tuning.max_fall_speed, vy - tuning.gravity * dt);
     y += vy * dt;
     const apexThreshold = tuning.apex_velocity_threshold;
-    if (!jumpPressed && phase === "jump_start" && vy > apexThreshold) phase = "rising";
-    else if (phase === "rising" && vy <= apexThreshold) phase = "apex";
-    else if (phase === "apex" && vy < -apexThreshold) phase = "falling";
-    else if (!state.grounded && vy <= -apexThreshold && !["jump_start", "rising"].includes(phase)) phase = "falling";
+    if (!jumpPressed && phase === "jump_start" && vy > apexThreshold) setPhase("rising");
+    else if (phase === "rising" && vy <= apexThreshold) setPhase("apex");
+    else if (phase === "apex" && vy < -apexThreshold) setPhase("falling");
+    else if (!state.grounded && vy <= -apexThreshold && !["jump_start", "rising"].includes(phase)) setPhase("falling");
   } else {
     const normal = state.floor_normal ?? [0, 1, 0];
     vy = normal[1] > 1e-4
@@ -258,9 +270,10 @@ export function predictMovementStep(state, input, tuning, dt, collisionWorld = n
   }
   if ((collision?.landed ?? false) || (state.movement_mode === "airborne" && nextGrounded)) {
     const impact = Math.max(Math.abs(state.vertical_speed ?? 0), state.landing_impact_velocity ?? 0);
-    phase = impact < tuning.landing_soft_velocity
+    setPhase(impact < tuning.landing_soft_velocity
       ? "soft_land"
-      : impact >= tuning.landing_heavy_velocity ? "heavy_land" : "normal_land";
+      : impact >= tuning.landing_heavy_velocity ? "heavy_land" : "normal_land",
+    Math.max(1, Math.ceil(tuning.landing_recovery_seconds / dt)));
     landingRecoveryUntilTick = simulationTick + Math.max(1, Math.ceil(tuning.landing_recovery_seconds / dt));
     phaseUntilTick = landingRecoveryUntilTick;
   } else if (nextGrounded) {
@@ -269,7 +282,7 @@ export function predictMovementStep(state, input, tuning, dt, collisionWorld = n
     if (recoveringLanding) {
       // Preserve the impact pose semantic while the server recovery window is active.
     } else if (landingPhases.includes(phase)) {
-      phase = "idle";
+      setPhase("idle");
     }
     const transitions = ["start", "stop", "pivot", "turn_in_place"];
     if (transitions.includes(phase) && simulationTick < phaseUntilTick) {
@@ -283,8 +296,7 @@ export function predictMovementStep(state, input, tuning, dt, collisionWorld = n
       const oldSpeed = previousHorizontalSpeed;
       if (desiredSpeed > 0.1) {
         if (oldSpeed < 0.25) {
-          phase = "start";
-          phaseUntilTick = simulationTick + Math.max(1, Math.ceil(0.2 / dt));
+          setPhase("start", Math.max(1, Math.ceil(0.2 / dt)));
         } else {
           const oldX = previousDesired[0] ?? 0;
           const oldZ = previousDesired[2] ?? 0;
@@ -297,20 +309,19 @@ export function predictMovementStep(state, input, tuning, dt, collisionWorld = n
             Math.hypot(solved.velocity[0], solved.velocity[2]) > 1 &&
             dot <= pivotDotThreshold
           ) {
-            phase = "pivot";
-            phaseUntilTick = simulationTick + Math.max(1, Math.ceil(0.2 / dt));
+            setPhase("pivot", Math.max(1, Math.ceil(0.2 / dt)));
           } else {
-            phase = "loop";
+            setPhase("loop");
           }
         }
       } else if (oldSpeed > 0.5) {
-        phase = "stop";
-        phaseUntilTick = simulationTick + Math.max(1, Math.ceil(0.2 / dt));
+        setPhase("stop", Math.max(1, Math.ceil(0.2 / dt)));
       } else if (Math.abs(angleDelta(input.view_yaw, state.character_yaw)) >= tuning.turn_in_place_threshold) {
-        phase = "turn_in_place";
-        phaseUntilTick = simulationTick + Math.max(1, Math.ceil(0.25 / dt));
+        turnAngle = Math.min(180, Math.max(45, Math.round(Math.abs(angleDelta(input.view_yaw, state.character_yaw)) / 45) * 45));
+        turnDirection = angleDelta(input.view_yaw, state.character_yaw) > 0 ? "right" : "left";
+        setPhase("turn_in_place", Math.max(1, Math.ceil(0.25 / dt)));
       } else {
-        phase = "idle";
+        setPhase("idle");
       }
     }
   }
@@ -323,9 +334,10 @@ export function predictMovementStep(state, input, tuning, dt, collisionWorld = n
     desiredFacing = input.view_yaw;
   }
   const rotation = solveRotation(state.character_yaw, state.angular_velocity, desiredFacing, dt, tuning);
-  const turnAngle = phase === "turn_in_place"
-    ? Math.min(180, Math.max(45, Math.round(Math.abs(angleDelta(input.view_yaw, state.character_yaw)) / 45) * 45))
-    : Number(state.turn_angle ?? 0);
+  const turnRemaining = phase === "turn_in_place" ? angleDelta(desiredFacing, rotation.yaw) : 0;
+  const phaseProgress = phaseDurationTicks > 0
+    ? Math.max(0, Math.min(1, (simulationTick - phaseStartTick) / phaseDurationTicks))
+    : 0;
   return {
     ...state,
     position,
@@ -365,9 +377,19 @@ export function predictMovementStep(state, input, tuning, dt, collisionWorld = n
     requested_gait: desired.requestedGait,
     rotation_mode: input.rotation_mode,
     locomotion_phase: phase,
+    phase_start_tick: phaseStartTick,
+    phase_duration_ticks: phaseDurationTicks,
+    phase_progress: phaseProgress,
     phase_until_tick: phaseUntilTick,
     landing_recovery_until_tick: landingRecoveryUntilTick,
     turn_angle: turnAngle,
+    turn_direction: phase === "turn_in_place"
+      ? turnDirection
+      : turnAngle > 0 ? turnDirection : "none",
+    remaining_turn_angle: turnRemaining,
+    turn_progress: phase === "turn_in_place"
+      ? Math.max(0, Math.min(1, 1 - Math.abs(turnRemaining) / Math.max(1, turnAngle)))
+      : 0,
     jump_held: input.jump,
     last_processed_input: input.sequence,
     simulation_tick: simulationTick + 1,

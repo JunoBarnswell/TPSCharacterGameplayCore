@@ -50,10 +50,10 @@ The protocol is JSON. Client messages are `hello`, `join_game`, `input`, `attack
 `ping`. Server messages include `welcome`, `joined`, `snapshot`, gameplay events, `pong`, and
 `error`. The detailed wire models live in `aster_game/network/messages.py`.
 
-Protocol v4 example client flow:
+Protocol v5 example client flow:
 
 ```json
-{"type":"hello","protocol_version":4}
+{"type":"hello","protocol_version":5}
 {"type":"join_game","player_name":"Player One"}
 {"type":"input","sequence":1,"client_tick":1,"move_x":0,"move_z":1,"jump":false,"requested_gait":"run","view_yaw":0,"view_pitch":0,"rotation_mode":"orient_to_movement"}
 {"type":"attack"}
@@ -64,7 +64,7 @@ is `walk`, `run`, or `sprint`; snapshots separately report requested and speed-d
 Movement tuning includes piecewise acceleration, braking, and turn-speed curves. `view_yaw` and
 `view_pitch` are degrees; movement axes are clamped to `[-1, 1]`, and sequences must increase.
 Repeated movement input is coalesced per tick while jump press edges are retained. The server
-acknowledges the latest applied sequence in each player's snapshot. Protocol v4 intentionally removes
+acknowledges the latest applied sequence in each player's snapshot. Protocol v5 intentionally removes
 the old `sprint` boolean, client-authored `yaw`, and mutually exclusive character `state` fields; no v1,
 v2, or v3 aliases are kept. Welcome v4 includes the collision profile and capsule geometry required
 for local collision prediction; snapshots include blocked-move state for input replay. Messages larger
@@ -94,13 +94,15 @@ All settings can be overridden with the `ASTER_GAME_` prefix, for example
 ## Motion architecture
 
 See [`docs/character-motion-runtime.md`](docs/character-motion-runtime.md) for motion-state channels,
-solver order, protocol-v4 ownership, ground probing, prediction/reconciliation, interpolation, and
+solver order, protocol-v5 ownership, ground probing, prediction/reconciliation, interpolation, and
 runtime boundaries. The browser animation modules and current implementation status are described in
 [`docs/animation-runtime.md`](docs/animation-runtime.md).
 
 The browser runtime now includes a local-neighbor directional blend space, normalized blend-weight
 smoothing, quaternion Skeleton/Pose/Clip sampling, multi-pose blending, and transform-level pose
-inertialization. These algorithms run against synthetic/test skeleton data in the 2D Motion Lab; the
+inertialization. Its pose graph also evaluates a nine-sample additive aim offset and composes masked
+upper-body, additive reaction, full-body, and life override layers. These algorithms run against
+synthetic/test skeleton data in the 2D Motion Lab; the
 repository still has no production WebGL renderer, authored character rig, or animation asset set.
-Runtime interfaces and algorithms for layered aim, IK, warping, and motion matching are delivered in
-the later phases where available; asset-backed character playback remains an integration task.
+IK, pose-deforming warping, motion matching, and asset-backed character playback remain later-stage
+work and require renderer/asset integration.

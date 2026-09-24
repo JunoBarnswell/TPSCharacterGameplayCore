@@ -19,6 +19,13 @@ animation assets.
   output; it is not described as pose inertialization.
 - The locomotion blend space selects the three nearest local samples and treats its direction axis as
   circular, including continuity across `-180°/+180°`.
+- Aim Offset uses a nine-pose grid and bilinear weights. Its output is blended as an additive pose over
+  the locomotion pose and can be restricted by a bone mask.
+- `CharacterPoseLayerStack` composes upper-body override, additive reaction, full-body override, and
+  life override channels in a fixed order. The pose graph can resolve simultaneous `shoot` and
+  `hit_reaction` entries from `MotionFrame.actionLayers`.
+- `MotionFrame` carries locomotion phase progress and turn direction, remaining angle, and progress;
+  protocol v5 snapshots replicate these values.
 
 These are data and pose algorithms. Their tests use small synthetic skeletons and clips. They do not
 establish GPU skinning, renderer compatibility, asset import, authoring workflow, or final character
@@ -43,11 +50,12 @@ must preserve the `Skeleton`/`Pose` contract or explicitly convert it to the ren
 
 - **Implemented:** local locomotion sample selection, blend-weight safety, skeleton hierarchy, local
   pose transforms, clip sampling, quaternion blend, weighted pose blend, world transform composition,
-  synthetic pose inertialization.
+  synthetic pose inertialization, additive aim pose blend, bone masks, action-layer composition, and
+  transition progress data.
 - **Experimental:** scalar response curves and current sample layout are code-authored examples, not
   animation content validated by an animator.
 - **Reserved:** renderer adapter, asset import pipeline, retargeting, and authored production clips.
-- **Not implemented at Phase E:** aim-pose sample composition, bone masks/action-layer blending, real
-  foot contact probes, pose-deforming orientation warping, root-motion playback, motion warping,
+- **Not implemented at Phase F:** renderer-backed foot contact probes, pose-deforming orientation
+  warping, root-motion playback, motion warping,
   trajectory-driven pose search, and motion matching. These remain Phase F/G work until their
   algorithms and tests land.

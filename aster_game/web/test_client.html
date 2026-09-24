@@ -307,6 +307,7 @@
               <div class="stat-cell"><span>SIM HZ · SNAP HZ · RENDER FPS</span><strong id="ratesValue">—</strong></div>
               <div class="stat-cell"><span>PING · JITTER · PENDING INPUTS</span><strong id="networkStatsValue">—</strong></div>
               <div class="stat-cell"><span>ANIMATION BLEND · WARP ANGLE</span><strong id="animationValue">—</strong></div>
+              <div class="stat-cell"><span>AIM SAMPLES · ACTION CHANNELS (SEMANTIC)</span><strong id="animationLayersValue">—</strong></div>
               <div class="stat-cell"><span>ROOT OFFSET · SKELETON DATA</span><strong id="rootOffsetValue">Unavailable · 2D Lab</strong></div>
             </div>
           </div>
@@ -532,7 +533,7 @@
 
       socket.addEventListener("open", () => {
         setConnection("connected", "Connected · joining");
-        send({ type: "hello", protocol_version: 4 });
+        send({ type: "hello", protocol_version: 5 });
       });
       socket.addEventListener("message", (event) => {
         let message;
@@ -641,7 +642,7 @@
             isVector3(ramp.center) && isVector3(ramp.half_extents) &&
             ramp.half_extents.every((value) => value > 0) &&
             Number.isFinite(ramp.pitch_degrees));
-        if (message.protocol_version !== 4 || !Number.isInteger(message.tick_rate) || message.tick_rate < 60 || message.tick_rate > 120 || !Number.isInteger(message.snapshot_interval_ticks) || message.snapshot_interval_ticks < 1 || !validTuning || !validProfile) {
+        if (message.protocol_version !== 5 || !Number.isInteger(message.tick_rate) || message.tick_rate < 60 || message.tick_rate > 120 || !Number.isInteger(message.snapshot_interval_ticks) || message.snapshot_interval_ticks < 1 || !validTuning || !validProfile) {
           setConnection("error", "Server must support 60 Hz");
           addEvent("Server must provide 60–120 Hz tick_rate, valid movement_tuning and collision_world.", "error");
           socket?.close(1002, "unsupported simulation rate or missing movement tuning");
@@ -872,7 +873,7 @@
       const ackDelay = lastAckDelayMs === null ? "—" : `${Math.round(lastAckDelayMs)} ms`;
       $("ackValue").textContent = `#${self.last_processed_input} · ${ackDelay}`;
       $("movementValue").textContent = `${self.movement_mode.toUpperCase()} · ${self.actual_gait.toUpperCase()} (requested ${self.requested_gait.toUpperCase()})`;
-      $("phaseValue").textContent = `${self.locomotion_phase.toUpperCase()} · ${self.action_layer.toUpperCase()} · ${self.life_state.toUpperCase()}`;
+      $("phaseValue").textContent = `${self.locomotion_phase.toUpperCase()} ${Math.round(Number(self.phase_progress) * 100)}% · turn ${self.turn_direction} ${Math.round(Number(self.turn_progress) * 100)}% / ${Number(self.remaining_turn_angle).toFixed(1)}° · ${self.action_layer.toUpperCase()} · ${self.life_state.toUpperCase()}`;
       $("rotationModeValue").textContent = self.rotation_mode.toUpperCase();
       $("accelValue").textContent = formatVector(self.acceleration);
       $("desiredMovementValue").textContent = `${formatVector([self.desired_velocity[0], self.desired_velocity[2]])} · ${Number(self.horizontal_speed).toFixed(2)} m/s`;
@@ -1068,6 +1069,11 @@
           currentAnimation = evaluateAnimationGraph(currentMotionFrame, movementTuning, blendWeightSmoother, dt);
           const selectedBlend = bestBlend(currentAnimation.locomotion);
           $("animationValue").textContent = `${selectedBlend} ${currentAnimation.locomotion[selectedBlend].toFixed(2)} · ${currentAnimation.orientationWarp.toFixed(1)}°`;
+          const selectedAim = Object.entries(currentAnimation.aimOffset.weights)
+            .filter(([, weight]) => weight > 0.01)
+            .map(([name, weight]) => `${name} ${weight.toFixed(2)}`)
+            .join(" · ");
+          $("animationLayersValue").textContent = `${selectedAim || "center"} · ${currentAnimation.actionLayers.join(" + ") || "none"}`;
         }
         if (authoritativeSelf) {
           const predicted = visualTransform.position;

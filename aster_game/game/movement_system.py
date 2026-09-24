@@ -17,6 +17,7 @@ from aster_game.game.movement.solver import (
     solve_rotation,
 )
 from aster_game.game.movement.state import (
+    CharacterMovementState,
     Gait,
     LifeState,
     LocomotionPhase,
@@ -27,6 +28,20 @@ from aster_game.game.movement.state import (
 
 if TYPE_CHECKING:
     from aster_game.game.world import GameWorld
+
+
+def _set_locomotion_phase(
+    movement: CharacterMovementState,
+    phase: LocomotionPhase,
+    tick: int,
+    duration_ticks: int = 0,
+) -> None:
+    if movement.locomotion_phase is not phase or (
+        duration_ticks > 0 and tick >= movement.phase_until_tick
+    ):
+        movement.phase_start_tick = tick
+        movement.phase_duration_ticks = duration_ticks
+    movement.locomotion_phase = phase
 
 
 class CommandSystem:
@@ -197,12 +212,14 @@ class MovementSystem:
             if facing is None and abs(view_delta) >= settings.turn_in_place_threshold:
                 facing = movement.view_yaw
                 angle = abs(view_delta)
-                movement.turn_angle = min(180.0, max(45.0, round(angle / 45.0) * 45.0))
                 if movement.locomotion_phase is not LocomotionPhase.TURN_IN_PLACE:
-                    movement.locomotion_phase = LocomotionPhase.TURN_IN_PLACE
-                    movement.phase_until_tick = world.tick_id + max(
-                        1, world.settings.tick_rate // 4
+                    movement.turn_angle = min(180.0, max(45.0, round(angle / 45.0) * 45.0))
+                    movement.turn_direction = "right" if view_delta > 0 else "left"
+                    duration = max(1, world.settings.tick_rate // 4)
+                    _set_locomotion_phase(
+                        movement, LocomotionPhase.TURN_IN_PLACE, world.tick_id, duration
                     )
+                    movement.phase_until_tick = world.tick_id + duration
             if facing is not None:
                 movement.desired_facing_yaw = facing
             yaw, angular_velocity = solve_rotation(
@@ -241,7 +258,10 @@ class MovementSystem:
                     fall.start_tick = world.tick_id
                     fall.last_vertical_velocity = 0.0
                     fall.impact_velocity = 0.0
-                    movement.locomotion_phase = LocomotionPhase.JUMP_START
+                    jump_start_duration = max(1, ceil(world.settings.tick_rate * 0.2))
+                    _set_locomotion_phase(
+                        movement, LocomotionPhase.JUMP_START, world.tick_id, jump_start_duration
+                    )
                     world.publish(
                         "jump_started",
                         entity_id=character.entity_id,
@@ -318,7 +338,7 @@ class AirLifecycleSystem:
             if fall.airborne and not movement.grounded:
                 if fall.jump_started and vertical > world.settings.apex_velocity_threshold:
                     if movement.locomotion_phase is LocomotionPhase.JUMP_START:
-                        movement.locomotion_phase = LocomotionPhase.RISING
+                        _set_locomotion_phase(movement, LocomotionPhase.RISING, world.tick_id)
                         world.publish("rising", entity_id=character.entity_id, tick=world.tick_id)
                 elif (
                     fall.jump_started
@@ -326,7 +346,7 @@ class AirLifecycleSystem:
                     and vertical <= world.settings.apex_velocity_threshold
                 ):
                     fall.apex_reached = True
-                    movement.locomotion_phase = LocomotionPhase.APEX
+                    _set_locomotion_phase(movement, LocomotionPhase.APEX, world.tick_id)
                     world.publish("apex_reached", entity_id=character.entity_id, tick=world.tick_id)
                 elif (
                     fall.jump_started
@@ -337,7 +357,7 @@ class AirLifecycleSystem:
                     and vertical < -world.settings.apex_velocity_threshold
                 ):
                     if movement.locomotion_phase is not LocomotionPhase.FALLING:
-                        movement.locomotion_phase = LocomotionPhase.FALLING
+                        _set_locomotion_phase(movement, LocomotionPhase.FALLING, world.tick_id)
                         world.publish(
                             "fall_started", entity_id=character.entity_id, tick=world.tick_id
                         )
@@ -355,7 +375,7 @@ class AirLifecycleSystem:
                 duration = max(
                     1, ceil(world.settings.landing_recovery_seconds * world.settings.tick_rate)
                 )
-                movement.locomotion_phase = phase
+                _set_locomotion_phase(movement, phase, world.tick_id, duration)
                 movement.phase_until_tick = world.tick_id + duration
                 movement.landing_recovery_until_tick = movement.phase_until_tick
                 world.publish(
@@ -402,7 +422,7 @@ class LocomotionPhaseSystem:
         for character in world.characters.values():
             movement = character.movement
             if character.life_state is LifeState.DEAD:
-                movement.locomotion_phase = LocomotionPhase.IDLE
+                _set_locomotion_phase(movement, LocomotionPhase.IDLE, world.tick_id)
                 continue
             if movement.movement_mode is MovementMode.AIRBORNE:
                 continue
@@ -417,7 +437,7 @@ class LocomotionPhaseSystem:
                 }
                 and world.tick_id >= movement.landing_recovery_until_tick
             ):
-                movement.locomotion_phase = LocomotionPhase.IDLE
+                _set_locomotion_phase(movement, LocomotionPhase.IDLE, world.tick_id)
             if (
                 movement.locomotion_phase
                 in {
@@ -440,13 +460,15 @@ class LocomotionPhaseSystem:
                 LocomotionPhase.PIVOT,
                 LocomotionPhase.TURN_IN_PLACE,
             }:
-                movement.locomotion_phase = LocomotionPhase.LOOP
+                _set_locomotion_phase(movement, LocomotionPhase.LOOP, world.tick_id)
 
             desired_speed = hypot(movement.desired_velocity[0], movement.desired_velocity[2])
             previous_speed = hypot(*movement.previous_horizontal_velocity)
             if desired_speed > 0.1:
                 if previous_speed < 0.25:
-                    movement.locomotion_phase = LocomotionPhase.START
+                    _set_locomotion_phase(
+                        movement, LocomotionPhase.START, world.tick_id, phase_duration
+                    )
                     movement.phase_until_tick = world.tick_id + phase_duration
                 elif previous_speed > 1.0 and movement.horizontal_speed > 1.0:
                     old_x = movement.previous_desired_velocity[0]
@@ -461,18 +483,22 @@ class LocomotionPhaseSystem:
                         dot <= pivot_dot_threshold
                         and movement.locomotion_phase is not LocomotionPhase.PIVOT
                     ):
-                        movement.locomotion_phase = LocomotionPhase.PIVOT
+                        _set_locomotion_phase(
+                            movement, LocomotionPhase.PIVOT, world.tick_id, phase_duration
+                        )
                         movement.phase_until_tick = world.tick_id + phase_duration
                     elif movement.locomotion_phase not in {
                         LocomotionPhase.PIVOT,
                         LocomotionPhase.START,
                     }:
-                        movement.locomotion_phase = LocomotionPhase.LOOP
+                        _set_locomotion_phase(movement, LocomotionPhase.LOOP, world.tick_id)
                 else:
-                    movement.locomotion_phase = LocomotionPhase.LOOP
+                    _set_locomotion_phase(movement, LocomotionPhase.LOOP, world.tick_id)
             elif previous_speed > 0.5:
                 if movement.locomotion_phase is not LocomotionPhase.STOP:
-                    movement.locomotion_phase = LocomotionPhase.STOP
+                    _set_locomotion_phase(
+                        movement, LocomotionPhase.STOP, world.tick_id, phase_duration
+                    )
                     movement.phase_until_tick = world.tick_id + phase_duration
             else:
-                movement.locomotion_phase = LocomotionPhase.IDLE
+                _set_locomotion_phase(movement, LocomotionPhase.IDLE, world.tick_id)

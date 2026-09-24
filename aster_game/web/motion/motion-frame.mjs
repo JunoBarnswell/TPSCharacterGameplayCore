@@ -5,6 +5,16 @@ export function createMotionFrame(state, tick, renderDelta = 0) {
     state.velocity?.[0] ?? 0,
     state.velocity?.[2] ?? 0,
   ) * 180 / Math.PI;
+  const characterYaw = Number(state.character_yaw ?? 0);
+  const viewYaw = Number(state.view_yaw ?? state.desired_facing_yaw ?? characterYaw);
+  const turnRemaining = state.locomotion_phase === "turn_in_place"
+    ? Number(state.remaining_turn_angle ?? angleDelta(viewYaw, characterYaw))
+    : 0;
+  const turnAngle = Math.max(1, Number(state.turn_angle ?? Math.abs(turnRemaining)));
+  const phaseDuration = Number(state.phase_duration_ticks ?? 0);
+  const derivedPhaseProgress = phaseDuration > 0
+    ? Math.max(0, Math.min(1, (tick - Number(state.phase_start_tick ?? tick)) / phaseDuration))
+    : 0;
   return Object.freeze({
     tick,
     position: [...(state.position ?? [0, 0, 0])],
@@ -19,7 +29,7 @@ export function createMotionFrame(state, tick, renderDelta = 0) {
       Number(state.character_yaw ?? 0),
     ),
     worldMovementDirection,
-    characterYaw: Number(state.character_yaw ?? 0),
+    characterYaw,
     desiredFacingYaw: Number(state.desired_facing_yaw ?? 0),
     yawRate: Number(state.yaw_rate ?? 0),
     turnAngle: Number(state.turn_angle ?? 0),
@@ -30,10 +40,21 @@ export function createMotionFrame(state, tick, renderDelta = 0) {
     requestedGait: state.requested_gait ?? "run",
     actualGait: state.actual_gait ?? "idle",
     locomotionPhase: state.locomotion_phase ?? "idle",
+    phaseProgress: Math.max(0, Math.min(1, Number(state.phase_progress ?? derivedPhaseProgress))),
+    turnDirection: state.turn_direction ?? (turnRemaining > 0 ? "right" : turnRemaining < 0 ? "left" : "none"),
+    turnProgress: Math.max(0, Math.min(1, Number(
+      state.turn_progress ?? (state.locomotion_phase === "turn_in_place"
+        ? 1 - Math.abs(turnRemaining) / turnAngle
+        : 0),
+    ))),
+    remainingTurnAngle: turnRemaining,
     rotationMode: state.rotation_mode ?? "orient_to_movement",
     aimYaw: Number(state.aim_yaw ?? 0),
     aimPitch: Number(state.aim_pitch ?? 0),
     actionLayer: state.action_layer ?? "none",
+    actionLayers: [...(state.action_layers ?? (state.action_layer && state.action_layer !== "none"
+      ? [state.action_layer]
+      : []))],
     hitDirection: state.hit_direction ? [...state.hit_direction] : null,
     hitStrength: Number(state.hit_strength ?? 0),
     footIK: {

@@ -373,5 +373,11 @@ def test_pivot_and_turn_in_place_are_derived_from_motion_inputs() -> None:
         )
         world.tick(world.settings.fixed_dt)
         assert character.movement.locomotion_phase is LocomotionPhase.TURN_IN_PLACE
+        turn_snapshot = world.snapshot()["players"][0]
+        assert turn_snapshot["phase_duration_ticks"] > 0
+        assert 0.0 <= turn_snapshot["phase_progress"] <= 1.0
+        assert turn_snapshot["turn_direction"] in {"left", "right"}
+        assert 0.0 <= turn_snapshot["turn_progress"] <= 1.0
+        assert abs(turn_snapshot["remaining_turn_angle"]) <= 180.0
     finally:
         world.close()

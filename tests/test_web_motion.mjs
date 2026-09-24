@@ -25,7 +25,10 @@ import {
   PoseHistory,
   predictTrajectory,
 } from "../aster_game/web/motion/motion-frame.mjs";
-import { evaluateAnimationGraph } from "../aster_game/web/animation/animation-graph.mjs";
+import {
+  evaluateAnimationGraph,
+  evaluatePoseAnimationGraph,
+} from "../aster_game/web/animation/animation-graph.mjs";
 import { BlendWeightSmoothing } from "../aster_game/web/animation/blend-weight-smoothing.mjs";
 import { evaluateBlendSpace } from "../aster_game/web/animation/blend-space.mjs";
 import { evaluateAimOffset } from "../aster_game/web/animation/aim-offset.mjs";
@@ -43,10 +46,17 @@ import {
   createTransform,
   createSkeleton,
   createPose,
+  Pose,
   quaternionSlerp,
   worldTransforms,
 } from "../aster_game/web/animation/pose.mjs";
 import { PoseInertializer } from "../aster_game/web/animation/pose-inertializer.mjs";
+import {
+  AnimationLayerChannel,
+  BoneMask,
+  CharacterPoseLayerStack,
+} from "../aster_game/web/animation/layers.mjs";
+import { evaluateAimOffsetPose } from "../aster_game/web/animation/aim-offset.mjs";
 import { CollisionWorld } from "../aster_game/web/motion/collision-world.mjs";
 
 const dt = 1 / 60;
@@ -554,9 +564,27 @@ test("collision prediction steps up a low box and lands after falling", () => {
 });
 
 test("MotionFrame, trajectory and bounded motion history carry animation inputs", () => {
-  const state = { ...idleState(), velocity: [1, 0, 2], horizontal_speed: Math.sqrt(5), character_yaw: 15 };
+  const state = {
+    ...idleState(),
+    velocity: [1, 0, 2],
+    horizontal_speed: Math.sqrt(5),
+    character_yaw: 15,
+    locomotion_phase: "turn_in_place",
+    phase_start_tick: 90,
+    phase_duration_ticks: 20,
+    turn_angle: 90,
+    remaining_turn_angle: -49.5,
+    turn_direction: "left",
+    turn_progress: 0.45,
+    action_layer: "hit_reaction",
+  };
   const frame = createMotionFrame(state, 100, dt);
   assert.equal(frame.tick, 100);
+  assert.equal(frame.phaseProgress, 0.5);
+  assert.equal(frame.turnDirection, "left");
+  assert.equal(frame.turnProgress, 0.45);
+  assert.equal(frame.remainingTurnAngle, -49.5);
+  assert.deepEqual(frame.actionLayers, ["hit_reaction"]);
   assert.equal(frame.footIK.leftFootGroundDistance, null);
   assert.ok(Math.abs(frame.movementDirection - (Math.atan2(1, 2) * 180 / Math.PI - 15)) < 1e-9);
   assert.deepEqual(predictTrajectory(frame).map((sample) => sample.time), [0.2, 0.4, 0.6, 0.8, 1]);
@@ -582,7 +610,10 @@ test("animation graph returns normalized blend, additive aim, and warp semantics
   }, 10);
   const weights = evaluateBlendSpace(frame, tuning.sprint_speed);
   assert.ok(Math.abs(Object.values(weights).reduce((sum, value) => sum + value, 0) - 1) < 1e-9);
-  assert.deepEqual(evaluateAimOffset(220, -95), { yaw: 180, pitch: -89 });
+  const aim = evaluateAimOffset(220, -95);
+  assert.equal(aim.yaw, 90);
+  assert.equal(aim.pitch, -60);
+  assert.equal(Object.values(aim.weights).reduce((sum, weight) => sum + weight, 0), 1);
   assert.equal(Math.abs(orientationWarpAngle(180, 0)), 90);
   const graph = evaluateAnimationGraph(frame, tuning, new BlendWeightSmoothing(), dt);
   assert.equal(graph.hitReaction, 0.6);
@@ -665,4 +696,146 @@ test("pose inertializer preserves transform continuity and decays real pose offs
   assert.deepEqual(atTransition.localTransforms, outgoing.localTransforms);
   assert.ok(Math.abs(settled.localTransforms[1].translation[1] - 1) < 1e-5);
   assert.ok(Math.abs(settled.localTransforms[1].rotation[1]) < 1e-5);
+});
+
+test("2D aim offset blends additive pose samples through an upper body mask", () => {
+  const skeleton = createSkeleton([
+    { name: "root", parentIndex: -1 },
+    { name: "spine", parentIndex: 0 },
+    { name: "left_leg", parentIndex: 0 },
+  ]);
+  const identity = createPose(skeleton);
+  const rightAim = createPose(skeleton, [
+    createTransform(),
+    createTransform([0, 0, 0], [0, Math.sin(Math.PI / 8), 0, Math.cos(Math.PI / 8)]),
+    createTransform(),
+  ]);
+  const aimSamples = Object.fromEntries([
+    "down_left", "down", "down_right", "left", "center", "right", "up_left", "up", "up_right",
+  ].map((name) => [name, name === "right" ? rightAim : identity]));
+  const upperBody = BoneMask.fromNames(skeleton, ["spine"]);
+  const aimed = evaluateAimOffsetPose(identity, aimSamples, 90, 0, 1, upperBody);
+  assert.ok(Math.abs(aimed.localTransforms[1].rotation[1]) > 0);
+  assert.deepEqual(aimed.localTransforms[2], identity.localTransforms[2]);
+});
+
+test("animation layer stack composes locomotion, upper body action, hit additive, and life override", () => {
+  const skeleton = createSkeleton([
+    { name: "root", parentIndex: -1 },
+    { name: "spine", parentIndex: 0 },
+    { name: "left_leg", parentIndex: 0 },
+  ]);
+  const baseRun = createPose(skeleton, [
+    createTransform(),
+    createTransform([0, 1, 0]),
+    createTransform([0, -1, 0]),
+  ]);
+  const shoot = createPose(skeleton, [
+    createTransform(),
+    createTransform([0, 1.2, 0]),
+    createTransform([0, -3, 0]),
+  ]);
+  const hit = createPose(skeleton, [
+    createTransform(),
+    createTransform([0.2, 0, 0]),
+    createTransform(),
+  ]);
+  const dead = createPose(skeleton, [
+    createTransform([0, -0.8, 0]),
+    createTransform([0, 0.4, 0]),
+    createTransform([0, -1.2, 0]),
+  ]);
+  const upperBody = BoneMask.fromNames(skeleton, ["spine"]);
+  const layers = new CharacterPoseLayerStack();
+  layers.set("shoot", {
+    channel: AnimationLayerChannel.UPPER_BODY_ACTION,
+    mode: "override",
+    pose: shoot,
+    weight: 1,
+    boneMask: upperBody,
+  });
+  layers.set("hit-reaction", {
+    channel: AnimationLayerChannel.ADDITIVE_REACTION,
+    mode: "additive",
+    pose: hit,
+    weight: 0.5,
+  });
+  const alivePose = layers.compose(baseRun);
+  assert.equal(alivePose.localTransforms[1].translation[1], 1.2);
+  assert.equal(alivePose.localTransforms[2].translation[1], -1);
+  assert.ok(alivePose.localTransforms[1].translation[0] > 0);
+  layers.set("death", {
+    channel: AnimationLayerChannel.LIFE_OVERRIDE,
+    mode: "override",
+    pose: dead,
+    weight: 1,
+  });
+  assert.deepEqual(layers.compose(baseRun).localTransforms, dead.localTransforms);
+  assert.deepEqual(layers.activeLayers().map(({ name }) => name), ["shoot", "hit-reaction", "death"]);
+  assert.equal(layers.remove("death"), true);
+});
+
+test("pose animation graph evaluates motion weights, additive aim, and action pose layers", () => {
+  const skeleton = createSkeleton([
+    { name: "root", parentIndex: -1 },
+    { name: "spine", parentIndex: 0 },
+  ]);
+  const neutral = createPose(skeleton);
+  const raised = createPose(skeleton, [
+    createTransform(),
+    createTransform([0, 0.25, 0]),
+  ]);
+  const tuningForGraph = { ...tuning, sprint_speed: 6.5 };
+  const frame = createMotionFrame({
+    ...idleState(),
+    velocity: [0, 0, 2.5],
+    horizontal_speed: 2.5,
+    aim_yaw: 30,
+    aim_pitch: 0,
+    action_layers: ["shoot", "hit_reaction"],
+  }, 20);
+  const poseLibrary = {
+    locomotionPoses: Object.fromEntries([
+      "idle", "walk_forward", "walk_backward", "walk_left", "walk_right",
+      "run_forward", "run_backward", "run_left", "run_right", "sprint",
+    ].map((name) => [name, name.startsWith("walk") ? raised : neutral])),
+    aimOffsetPoses: Object.fromEntries([
+      "down_left", "down", "down_right", "left", "center", "right", "up_left", "up", "up_right",
+    ].map((name) => [name, name === "right" ? raised : neutral])),
+    layers: [{
+      name: "test-hit",
+      channel: AnimationLayerChannel.ADDITIVE_REACTION,
+      mode: "additive",
+      pose: raised,
+      weight: 0.5,
+    }],
+    actionPoses: {
+      shoot: {
+        channel: AnimationLayerChannel.UPPER_BODY_ACTION,
+        mode: "override",
+        pose: raised,
+        weight: 1,
+        boneMask: BoneMask.fromNames(skeleton, ["spine"]),
+      },
+      hit_reaction: {
+        channel: AnimationLayerChannel.ADDITIVE_REACTION,
+        mode: "additive",
+        pose: raised,
+        weight: 0.25,
+      },
+    },
+  };
+  const graph = evaluatePoseAnimationGraph(
+    frame,
+    tuningForGraph,
+    new BlendWeightSmoothing(),
+    poseLibrary,
+    dt,
+  );
+  assert.ok(graph.pose instanceof Pose);
+  assert.ok(graph.selectedLocomotionSamples.length <= 3);
+  assert.deepEqual(graph.activePoseLayers.map(({ name }) => name), [
+    "test-hit", "action:shoot", "action:hit_reaction",
+  ]);
+  assert.ok(graph.pose.localTransforms[1].translation[1] > 0);
 });

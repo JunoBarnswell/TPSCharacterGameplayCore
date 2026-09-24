@@ -38,6 +38,9 @@ class StateSystem:
                 movement.movement_mode = MovementMode.DISABLED
                 movement.actual_gait = Gait.IDLE
                 movement.locomotion_phase = LocomotionPhase.IDLE
+                movement.phase_start_tick = world.tick_id
+                movement.phase_duration_ticks = 0
+                movement.turn_direction = "none"
             elif world.tick_id >= character.action_until_tick and character.action_layer in {
                 ActionLayer.ATTACK,
                 ActionLayer.HIT_REACTION,

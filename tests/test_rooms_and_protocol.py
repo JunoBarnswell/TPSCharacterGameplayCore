@@ -146,15 +146,15 @@ def test_websocket_handshake_commands_snapshot_and_metrics(monkeypatch) -> None:
                 assert collision_asset.status_code == 200
 
             async with websockets.connect(f"ws://127.0.0.1:{port}/ws") as obsolete_client:
-                await obsolete_client.send(json.dumps({"type": "hello", "protocol_version": 3}))
+                await obsolete_client.send(json.dumps({"type": "hello", "protocol_version": 4}))
                 unsupported = json.loads(await asyncio.wait_for(obsolete_client.recv(), 2.0))
                 assert unsupported["code"] == "UNSUPPORTED_PROTOCOL"
 
             async with websockets.connect(f"ws://127.0.0.1:{port}/ws") as websocket:
-                await websocket.send(json.dumps({"type": "hello", "protocol_version": 4}))
+                await websocket.send(json.dumps({"type": "hello", "protocol_version": 5}))
                 welcome = json.loads(await asyncio.wait_for(websocket.recv(), 2.0))
                 assert welcome["type"] == "welcome"
-                assert welcome["protocol_version"] == 4
+                assert welcome["protocol_version"] == 5
                 assert welcome["tick_rate"] == settings.tick_rate
                 assert welcome["snapshot_interval_ticks"] == settings.snapshot_interval_ticks
                 assert welcome["movement_tuning"] == {

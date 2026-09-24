@@ -18,8 +18,9 @@ uses `requestAnimationFrame` and can render at its display rate.
 `CharacterMovementState` owns velocity, acceleration, desired movement, floor sample, movement mode,
 gait, facing/view rotations, rotation mode, and locomotion phase. `Character` separately owns
 `ActionLayer` and `LifeState`. A hit reaction therefore overlays locomotion instead of replacing it.
-The protocol is version 4. It removes the old single `state`, input `yaw`, and `sprint` boolean fields
-without legacy aliases, and rejects protocol versions 1–3. Input requests `walk`, `run`, or `sprint`;
+The protocol is version 5. It removes the old single `state`, input `yaw`, and `sprint` boolean fields
+without legacy aliases, and rejects protocol versions 1–4. Snapshots also carry phase progress and
+turn-in-place direction/progress. Input requests `walk`, `run`, or `sprint`;
 the server independently derives actual gait from solved horizontal speed.
 
 ## Simulation order
@@ -64,7 +65,7 @@ inputs. Reconciliation offset is applied to a separate visual position and decay
 snap threshold for teleports or large errors. Remote snapshots retain tick, position, velocity, and
 rotation; render time is delayed and cubic Hermite interpolation uses endpoint velocities.
 
-The JSON wire model is strict. Protocol version 4 carries `view_yaw`, `view_pitch`, `rotation_mode`, and
+The JSON wire model is strict. Protocol version 5 carries `view_yaw`, `view_pitch`, `rotation_mode`, and
 `requested_gait`; snapshots report `actual_gait` separately. The JSON tuning contains the solver curves.
 Inputs carry intent only; snapshots carry independent movement channels, floor sample, aim offset,
 and input ACK.
@@ -103,8 +104,8 @@ authored character animation assets.
 - Phase E: blend space selects three local samples with a circular direction axis, blend weights are
   clamped and normalized, and synthetic skeletons support quaternion pose blending, clip sampling,
   multi-pose blending, world transforms, and transform-level pose inertialization.
-- Phase F planned: additive aim-pose sampling, animation action-layer stack, bone masks, and transition
-  progress driven by `MotionFrame`.
+- Phase F: nine-sample additive aim-pose evaluation, bone-masked action layers, combined upper-body
+  action plus additive reaction, and server-replicated turn/phase progress are implemented and tested.
 - Phase G planned: tested foot IK, pose-deforming orientation warp, root-motion/motion-warp transforms,
   solver-rollout trajectories, pose features/history, pose search, and motion matching.
 
