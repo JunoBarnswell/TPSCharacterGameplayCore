@@ -94,10 +94,13 @@ All settings can be overridden with the `ASTER_GAME_` prefix, for example
 ## Motion architecture
 
 See [`docs/character-motion-runtime.md`](docs/character-motion-runtime.md) for motion-state channels,
-solver order, protocol-v3 ownership, ground probing, prediction/reconciliation, interpolation, and
-runtime boundaries.
+solver order, protocol-v4 ownership, ground probing, prediction/reconciliation, interpolation, and
+runtime boundaries. The browser animation modules and current implementation status are described in
+[`docs/animation-runtime.md`](docs/animation-runtime.md).
 
-The current browser runtime provides a two-dimensional blend-space weight model, additive aim and hit
-layers, inertialized blend weights, semantic orientation-warp angle, trajectory samples, and bounded
-motion/pose history. There is no production skeleton/pose backend. Real Foot IK, Root Motion playback,
-Motion Warping, Pose Search, and Motion Matching remain future work.
+The browser runtime now includes a local-neighbor directional blend space, normalized blend-weight
+smoothing, quaternion Skeleton/Pose/Clip sampling, multi-pose blending, and transform-level pose
+inertialization. These algorithms run against synthetic/test skeleton data in the 2D Motion Lab; the
+repository still has no production WebGL renderer, authored character rig, or animation asset set.
+Runtime interfaces and algorithms for layered aim, IK, warping, and motion matching are delivered in
+the later phases where available; asset-backed character playback remains an integration task.

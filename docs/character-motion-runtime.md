@@ -82,10 +82,11 @@ equations; Bullet collision remains covered by separate authoritative-scene test
 ## Browser animation runtime
 
 `MotionFrame` is the only input to the animation-motion modules. It is built from reconciled/local
-simulation state, not directly from WebSocket messages. The runtime includes locomotion blend-space
-weights, additive aim and hit layers, inertialized scalar transitions, orientation-warp angle,
-trajectory samples, and bounded motion history. It produces semantic blend data only: the current
-2D canvas client has no skeleton or production 3D animation backend.
+simulation state, not directly from WebSocket messages. Owner corrections smooth position and yaw,
+while remote transforms sample buffered snapshots using estimated server time and adaptive delay.
+Animation runtime implementation and synthetic-pose limitations are described in
+[`animation-runtime.md`](animation-runtime.md). The 2D canvas client has no production 3D renderer or
+authored character animation assets.
 
 ## Stages and acceptance
 
@@ -96,13 +97,16 @@ trajectory samples, and bounded motion history. It produces semantic blend data 
 - Phase C: owner prediction history stores solved movement/floor/collision channels, ACK reconciliation
   restores and replays pending inputs through a capsule-radius collision replica, and correction
   position/rotation/velocity errors plus large-correction counts are exposed in the lab.
-- P1.0: Start/Stop/Pivot/Turn in Place, rotation modes, view/character/aim separation.
-- P1.1: shared movement equations, history/ACK replay, visual correction smoothing, remote
-  interpolation, and adjustable latency/jitter/loss in the lab.
-- P1.2: MotionFrame consumer, blend space, aim/hit additive layers, inertialization, orientation
-  warp, and trajectory/history data.
+- Phase D: owner position/yaw visual transforms smooth small corrections and snap large errors;
+  remote snapshots use bounded Hermite interpolation, capped extrapolation, teleport resets, server
+  clock estimation, and adaptive interpolation delay.
+- Phase E: blend space selects three local samples with a circular direction axis, blend weights are
+  clamped and normalized, and synthetic skeletons support quaternion pose blending, clip sampling,
+  multi-pose blending, world transforms, and transform-level pose inertialization.
+- Phase F planned: additive aim-pose sampling, animation action-layer stack, bone masks, and transition
+  progress driven by `MotionFrame`.
+- Phase G planned: tested foot IK, pose-deforming orientation warp, root-motion/motion-warp transforms,
+  solver-rollout trajectories, pose features/history, pose search, and motion matching.
 
-Real skeletal animation playback, Root Motion playback, foot raycasts/IK, Motion Warping, Pose Search,
-and Motion Matching remain future work. The `MotionFrame.footIK` shape is reserved and stays null
-until a browser 3D rig supplies measured foot contacts. Orientation warping in this stage computes
-semantic output only; it does not deform a real skeleton.
+Real skeletal playback, renderer-backed foot probes, and asset-authored quality are not part of the
+2D Motion Lab even after the synthetic pose runtime is complete.

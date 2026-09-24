@@ -26,9 +26,27 @@ import {
   predictTrajectory,
 } from "../aster_game/web/motion/motion-frame.mjs";
 import { evaluateAnimationGraph } from "../aster_game/web/animation/animation-graph.mjs";
+import { BlendWeightSmoothing } from "../aster_game/web/animation/blend-weight-smoothing.mjs";
 import { evaluateBlendSpace } from "../aster_game/web/animation/blend-space.mjs";
 import { evaluateAimOffset } from "../aster_game/web/animation/aim-offset.mjs";
 import { orientationWarpAngle } from "../aster_game/web/animation/orientation-warp.mjs";
+import {
+  AnimationClip,
+  AnimationTrack,
+  Keyframe,
+  ClipSampler,
+  sampleAnimationClip,
+} from "../aster_game/web/animation/clip.mjs";
+import {
+  blendPoses,
+  blendWeightedPoses,
+  createTransform,
+  createSkeleton,
+  createPose,
+  quaternionSlerp,
+  worldTransforms,
+} from "../aster_game/web/animation/pose.mjs";
+import { PoseInertializer } from "../aster_game/web/animation/pose-inertializer.mjs";
 import { CollisionWorld } from "../aster_game/web/motion/collision-world.mjs";
 
 const dt = 1 / 60;
@@ -566,7 +584,85 @@ test("animation graph returns normalized blend, additive aim, and warp semantics
   assert.ok(Math.abs(Object.values(weights).reduce((sum, value) => sum + value, 0) - 1) < 1e-9);
   assert.deepEqual(evaluateAimOffset(220, -95), { yaw: 180, pitch: -89 });
   assert.equal(Math.abs(orientationWarpAngle(180, 0)), 90);
-  const graph = evaluateAnimationGraph(frame, tuning, new Map(), dt);
+  const graph = evaluateAnimationGraph(frame, tuning, new BlendWeightSmoothing(), dt);
   assert.equal(graph.hitReaction, 0.6);
   assert.equal(graph.phase, "idle");
+});
+
+test("blend space selects local samples with a circular direction axis", () => {
+  const positiveSeam = evaluateBlendSpace({ movementDirection: 179, horizontalSpeed: 3 }, 6.5);
+  const negativeSeam = evaluateBlendSpace({ movementDirection: -179, horizontalSpeed: 3 }, 6.5);
+  const total = Object.values(positiveSeam).reduce((sum, weight) => sum + weight, 0);
+  assert.ok(Math.abs(total - 1) < 1e-12);
+  assert.ok(Object.values(positiveSeam).every((weight) => weight >= 0));
+  for (const name of ["idle", "walk_forward", "walk_backward", "run_forward", "run_backward", "sprint"]) {
+    assert.ok(Math.abs(positiveSeam[name] - negativeSeam[name]) < 0.04, name);
+  }
+  assert.ok(Math.abs(positiveSeam.walk_left - negativeSeam.walk_right) < 0.04);
+  assert.ok(Math.abs(positiveSeam.walk_right - negativeSeam.walk_left) < 0.04);
+  assert.ok(Math.abs(positiveSeam.run_left - negativeSeam.run_right) < 0.04);
+  assert.ok(Math.abs(positiveSeam.run_right - negativeSeam.run_left) < 0.04);
+  assert.equal(Object.values(positiveSeam).filter((weight) => weight > 0).length, 3);
+});
+
+test("blend weight smoothing clamps and normalizes each result", () => {
+  const smoother = new BlendWeightSmoothing(0.08);
+  const target = { idle: 1, run: 0, sprint: 0 };
+  assert.deepEqual(smoother.update(target, dt), target);
+  for (let index = 0; index < 30; index++) {
+    const weights = smoother.update({ idle: 0, run: 0, sprint: 1 }, dt);
+    assert.ok(Object.values(weights).every((weight) => weight >= 0));
+    assert.ok(Math.abs(Object.values(weights).reduce((sum, weight) => sum + weight, 0) - 1) < 1e-12);
+  }
+});
+
+test("synthetic skeleton clip sampling and quaternion pose blending produce world transforms", () => {
+  const skeleton = createSkeleton([
+    { name: "root", parentIndex: -1 },
+    { name: "spine", parentIndex: 0, bindLocal: createTransform([0, 1, 0]) },
+  ]);
+  const idlePose = createPose(skeleton);
+  const clip = new AnimationClip("spine-turn", 1, [
+    new AnimationTrack(1, [
+      new Keyframe(0, createTransform([0, 1, 0])),
+      new Keyframe(1, createTransform([0, 1, 0], [0, Math.sin(Math.PI / 4), 0, Math.cos(Math.PI / 4)])),
+    ]),
+  ]);
+  const halfPose = sampleAnimationClip(clip, skeleton, 0.5);
+  const sampler = new ClipSampler(clip, skeleton);
+  assert.deepEqual(sampler.sample(0.5).localTransforms, halfPose.localTransforms);
+  const blended = blendPoses(idlePose, halfPose, 0.5);
+  assert.equal(blended.skeleton, skeleton);
+  assert.ok(Math.abs(Math.hypot(...blended.localTransforms[1].rotation) - 1) < 1e-12);
+  assert.ok(Math.abs(blended.localTransforms[1].rotation[1]) > 0);
+  const weighted = blendWeightedPoses([
+    { pose: idlePose, weight: 1 },
+    { pose: halfPose, weight: 3 },
+  ]);
+  const worlds = worldTransforms(weighted);
+  assert.equal(worlds.length, 2);
+  assert.ok(Math.abs(worlds[1].translation[1] - 1) < 1e-9);
+  assert.ok(Math.abs(Math.hypot(...quaternionSlerp([0, 0, 0, 1], [0, 1, 0, 0], 0.5)) - 1) < 1e-12);
+});
+
+test("pose inertializer preserves transform continuity and decays real pose offsets", () => {
+  const skeleton = createSkeleton([
+    { name: "root", parentIndex: -1 },
+    { name: "pelvis", parentIndex: 0 },
+  ]);
+  const outgoing = createPose(skeleton, [
+    createTransform([0.2, 0, 0]),
+    createTransform([0, 1.2, 0], [0, Math.sin(0.2), 0, Math.cos(0.2)]),
+  ]);
+  const incoming = createPose(skeleton, [
+    createTransform(),
+    createTransform([0, 1, 0]),
+  ]);
+  const inertializer = new PoseInertializer(0.12);
+  inertializer.begin(outgoing, incoming);
+  const atTransition = inertializer.sample(incoming, 0);
+  const settled = inertializer.sample(incoming, 1.2);
+  assert.deepEqual(atTransition.localTransforms, outgoing.localTransforms);
+  assert.ok(Math.abs(settled.localTransforms[1].translation[1] - 1) < 1e-5);
+  assert.ok(Math.abs(settled.localTransforms[1].rotation[1]) < 1e-5);
 });

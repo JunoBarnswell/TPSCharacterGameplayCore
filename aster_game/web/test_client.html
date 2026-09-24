@@ -351,6 +351,7 @@
       VisualTransformSmoothing,
     } from "/web/motion/network-motion.mjs";
     import { CollisionWorld } from "/web/motion/collision-world.mjs";
+    import { BlendWeightSmoothing } from "/web/animation/blend-weight-smoothing.mjs";
     import { createMotionFrame, MotionHistory, PoseHistory, predictTrajectory } from "/web/motion/motion-frame.mjs";
     import { evaluateAnimationGraph } from "/web/animation/animation-graph.mjs";
 
@@ -413,7 +414,7 @@
     const remoteBuffers = new Map();
     const motionHistory = new MotionHistory(180);
     const poseHistory = new PoseHistory(180);
-    const inertializer = new Map();
+    const blendWeightSmoother = new BlendWeightSmoothing();
     const pendingPings = new Map();
     let visualTransform = null;
     let remoteRenderTick = 0;
@@ -508,6 +509,7 @@
       remoteBuffers.clear();
       visualTransform = null;
       smoother.reset();
+      blendWeightSmoother.reset();
       remoteRenderTick = 0;
       lastAcknowledgedInput = -1;
       lastAckDelayMs = null;
@@ -561,6 +563,7 @@
         authoritativeSelf = null;
         prediction.state = null;
         prediction.inputs = [];
+        blendWeightSmoother.reset();
         remoteBuffers.clear();
         players.clear();
         projectiles.clear();
@@ -1062,7 +1065,7 @@
         poseHistory.push(currentMotionFrame);
         currentTrajectory = predictTrajectory(currentMotionFrame);
         if (movementTuning) {
-          currentAnimation = evaluateAnimationGraph(currentMotionFrame, movementTuning, inertializer, dt);
+          currentAnimation = evaluateAnimationGraph(currentMotionFrame, movementTuning, blendWeightSmoother, dt);
           const selectedBlend = bestBlend(currentAnimation.locomotion);
           $("animationValue").textContent = `${selectedBlend} ${currentAnimation.locomotion[selectedBlend].toFixed(2)} · ${currentAnimation.orientationWarp.toFixed(1)}°`;
         }
