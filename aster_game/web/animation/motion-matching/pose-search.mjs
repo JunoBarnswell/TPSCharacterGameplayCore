@@ -6,7 +6,16 @@ export const defaultPoseSearchWeights = Object.freeze({
   trajectory: 1.0,
   velocity: 0.5,
   facing: 0.5,
+  contacts: 0.35,
   continuity: 0.25,
+});
+
+const normalizationFloors = Object.freeze({
+  pose: 0.25,
+  trajectory: 0.5,
+  velocity: 1,
+  facing: 0.25,
+  contacts: 0.5,
 });
 
 function rmsDistance(left, right, name) {
@@ -23,8 +32,36 @@ function flatten(values) {
   return values.flatMap((value) => [...value]);
 }
 
+function featureGroups(features) {
+  return {
+    pose: flatten([features.pelvisPosition, features.leftFootPosition, features.rightFootPosition]),
+    trajectory: flatten(features.trajectory.map(({ position }) => position)),
+    velocity: flatten([
+      features.rootVelocity,
+      features.pelvisVelocity,
+      features.leftFootVelocity,
+      features.rightFootVelocity,
+      ...features.trajectory.map(({ velocity }) => velocity),
+    ]),
+    facing: flatten([features.facing, ...features.trajectory.map(({ facing }) => facing)]),
+    contacts: [...features.contacts],
+  };
+}
+
+function normalizationScale(vectors, floor) {
+  const values = vectors.flat();
+  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+  const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
+  return Math.max(floor, Math.sqrt(variance));
+}
+
+function normalizedRmsDistance(left, right, name, scale) {
+  return rmsDistance(left, right, name) / scale;
+}
+
 function queryFeatures(features) {
   if (!features || !Array.isArray(features.rootVelocity) || !Array.isArray(features.facing) ||
+      !Array.isArray(features.contacts) ||
       !Array.isArray(features.pelvisPosition) || !Array.isArray(features.pelvisVelocity) ||
       !Array.isArray(features.leftFootPosition) || !Array.isArray(features.rightFootPosition) ||
       !Array.isArray(features.leftFootVelocity) || !Array.isArray(features.rightFootVelocity) ||
@@ -36,7 +73,8 @@ function queryFeatures(features) {
 
 export class PoseSearch {
   constructor(database, weights = defaultPoseSearchWeights) {
-    if (!(database instanceof PoseDatabase) || !weights || typeof weights !== "object" ||
+    if (!(database instanceof PoseDatabase) || database.size() === 0 ||
+        !weights || typeof weights !== "object" ||
         Array.isArray(weights)) {
       throw new TypeError("pose search requires a database and weight object");
     }
@@ -49,6 +87,13 @@ export class PoseSearch {
     }
     this.database = database;
     this.weights = Object.freeze(normalized);
+    const groups = database.candidates.map(({ features }) => featureGroups(queryFeatures(features)));
+    this.normalizationScales = Object.freeze(Object.fromEntries(
+      Object.keys(normalizationFloors).map((name) => [
+        name,
+        normalizationScale(groups.map((group) => group[name]), normalizationFloors[name]),
+      ]),
+    ));
   }
 
   search(features, { currentCandidateId = null, currentClipName = null, currentTimeSeconds = null, limit = 5 } = {}) {
@@ -64,58 +109,69 @@ export class PoseSearch {
         canonicalQueryVector.some((value, index) => value !== queryVector[index])) {
       throw new RangeError("pose search feature vector does not match its structured features");
     }
-    const queryPose = flatten([query.pelvisPosition, query.leftFootPosition, query.rightFootPosition]);
-    const queryTrajectory = flatten(query.trajectory.map(({ position }) => position));
-    const queryVelocity = flatten([
-      query.rootVelocity,
-      query.pelvisVelocity,
-      query.leftFootVelocity,
-      query.rightFootVelocity,
-      ...query.trajectory.map(({ velocity }) => velocity),
-    ]);
-    const queryFacing = flatten([query.facing, ...query.trajectory.map(({ facing }) => facing)]);
+    const queryGroups = featureGroups(query);
     const ranked = this.database.candidates.map((candidate) => {
       const candidateFeatures = queryFeatures(candidate.features);
-      const poseCost = rmsDistance(
-        queryPose,
-        flatten([candidateFeatures.pelvisPosition, candidateFeatures.leftFootPosition, candidateFeatures.rightFootPosition]),
-        "pose",
+      const candidateGroups = featureGroups(candidateFeatures);
+      const poseCost = normalizedRmsDistance(
+        queryGroups.pose, candidateGroups.pose, "pose", this.normalizationScales.pose,
       );
-      const trajectoryCost = rmsDistance(
-        queryTrajectory,
-        flatten(candidateFeatures.trajectory.map(({ position }) => position)),
-        "trajectory",
+      const trajectoryCost = normalizedRmsDistance(
+        queryGroups.trajectory, candidateGroups.trajectory,
+        "trajectory", this.normalizationScales.trajectory,
       );
-      const velocityCost = rmsDistance(
-        queryVelocity,
-        flatten([
-          candidateFeatures.rootVelocity,
-          candidateFeatures.pelvisVelocity,
-          candidateFeatures.leftFootVelocity,
-          candidateFeatures.rightFootVelocity,
-          ...candidateFeatures.trajectory.map(({ velocity }) => velocity),
-        ]),
-        "velocity",
+      const velocityCost = normalizedRmsDistance(
+        queryGroups.velocity, candidateGroups.velocity,
+        "velocity", this.normalizationScales.velocity,
       );
-      const facingCost = rmsDistance(
-        queryFacing,
-        flatten([candidateFeatures.facing, ...candidateFeatures.trajectory.map(({ facing }) => facing)]),
-        "facing",
+      const facingCost = normalizedRmsDistance(
+        queryGroups.facing, candidateGroups.facing, "facing", this.normalizationScales.facing,
       );
+      const contactCost = normalizedRmsDistance(
+        queryGroups.contacts, candidateGroups.contacts,
+        "contacts", this.normalizationScales.contacts,
+      );
+      const clipDistance = candidate.clipName === currentClipName &&
+        Number.isFinite(currentTimeSeconds)
+        ? Math.abs(candidate.timeSeconds - currentTimeSeconds)
+        : Infinity;
+      const clipDuration = candidate.metadata?.durationSeconds;
+      const wrappedClipDistance = Number.isFinite(clipDuration) && clipDuration > 0
+        ? Math.min(clipDistance % clipDuration, clipDuration - clipDistance % clipDuration)
+        : clipDistance;
       const continuityCost = currentCandidateId === null && currentClipName === null
         ? 0
         : candidate.id === currentCandidateId
           ? 0
-          : candidate.clipName === currentClipName && Number.isFinite(currentTimeSeconds)
-            ? Math.min(1, Math.abs(candidate.timeSeconds - currentTimeSeconds))
+          : Number.isFinite(wrappedClipDistance)
+            ? Math.min(1, wrappedClipDistance)
             : 1;
       const cost = poseCost * this.weights.pose +
         trajectoryCost * this.weights.trajectory +
         velocityCost * this.weights.velocity +
         facingCost * this.weights.facing +
+        contactCost * this.weights.contacts +
         continuityCost * this.weights.continuity;
-      return { candidate, cost, poseCost, trajectoryCost, velocityCost, facingCost, continuityCost };
+      return {
+        candidate,
+        cost,
+        poseCost,
+        trajectoryCost,
+        velocityCost,
+        facingCost,
+        contactCost,
+        continuityCost,
+      };
     }).sort((left, right) => left.cost - right.cost || left.candidate.id.localeCompare(right.candidate.id));
-    return { candidateCount: ranked.length, results: ranked.slice(0, limit) };
+    const results = ranked.slice(0, limit);
+    if (currentCandidateId !== null && !results.some(({ candidate }) => candidate.id === currentCandidateId)) {
+      const current = ranked.find(({ candidate }) => candidate.id === currentCandidateId);
+      if (current) results.push(current);
+    }
+    return {
+      candidateCount: ranked.length,
+      results,
+      normalizationScales: this.normalizationScales,
+    };
   }
 }

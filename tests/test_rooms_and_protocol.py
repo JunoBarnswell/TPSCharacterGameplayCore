@@ -134,8 +134,16 @@ def test_snapshot_profiles_keep_owner_ack_out_of_remote_motion_state() -> None:
         owner = first_wire["owner"]
         remote = first_wire["players"][0]
         assert "last_processed_input" in owner
+        assert "last_grounded_tick" in owner
+        assert 0.0 <= owner["gait_phase"] < 1.0
         assert "jump_available_tick" in owner
         assert {"velocity", "character_yaw", "locomotion_phase", "floor_normal"} <= remote.keys()
+        assert {
+            "locomotion", "upper_body_action", "additive_reaction",
+            "full_body_override", "life_override",
+        } <= remote["action_channels"].keys()
+        assert remote["action_channels"]["locomotion"]["active"]
+        assert remote["action_channels"]["locomotion"]["sequence"] >= 0
         assert "last_processed_input" not in remote
         assert "ground_contact_point" not in remote
 
@@ -212,10 +220,10 @@ def test_websocket_handshake_commands_snapshot_and_metrics(monkeypatch) -> None:
                     assert legacy_error["type"] == "error"
                     assert legacy_error["code"] == "UNSUPPORTED_PROTOCOL"
 
-                await websocket.send(json.dumps({"type": "hello", "protocol_version": 6}))
+                await websocket.send(json.dumps({"type": "hello", "protocol_version": 7}))
                 welcome = json.loads(await asyncio.wait_for(websocket.recv(), 2.0))
                 assert welcome["type"] == "welcome"
-                assert welcome["protocol_version"] == 6
+                assert welcome["protocol_version"] == 7
                 assert welcome["tick_rate"] == settings.tick_rate
                 assert welcome["snapshot_interval_ticks"] == settings.snapshot_interval_ticks
                 assert welcome["movement_tuning"] == {

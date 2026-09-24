@@ -14,6 +14,7 @@ import {
 } from "../aster_game/web/motion/movement-solver.mjs";
 import {
   PredictionHistory,
+  FixedStepScheduler,
   RemoteSnapshotBuffer,
   VisualTransformSmoothing,
   AdaptiveInterpolationDelay,
@@ -34,7 +35,11 @@ import { orientationWarpAngle, warpPoseOrientation } from "../aster_game/web/ani
 import { solveFootIK, FootLockState } from "../aster_game/web/animation/foot-ik.mjs";
 import { applyVisualRootOffset } from "../aster_game/web/animation/root-offset.mjs";
 import { applyRootMotionDelta, extractRootMotionDelta } from "../aster_game/web/animation/root-motion.mjs";
-import { MotionWarpTarget, warpRootMotionDelta } from "../aster_game/web/animation/motion-warp.mjs";
+import {
+  MotionWarpTarget,
+  MotionWarpWindow,
+  warpRootMotionDelta,
+} from "../aster_game/web/animation/motion-warp.mjs";
 import { PoseHistory } from "../aster_game/web/animation/motion-matching/pose-history.mjs";
 import { PoseDatabase } from "../aster_game/web/animation/motion-matching/pose-database.mjs";
 import { PoseSearch } from "../aster_game/web/animation/motion-matching/pose-search.mjs";
@@ -66,6 +71,7 @@ import {
 } from "../aster_game/web/animation/layers.mjs";
 import { evaluateAimOffsetPose } from "../aster_game/web/animation/aim-offset.mjs";
 import { CollisionWorld } from "../aster_game/web/motion/collision-world.mjs";
+import { ActionChannelSnapshotCursor } from "../aster_game/web/animation/action-channel-state.mjs";
 
 const dt = 1 / 60;
 const goldenVectors = JSON.parse(readFileSync(
@@ -113,6 +119,8 @@ const collisionTuning = {
   ground_probe_depth: 0.4,
   ground_probe_start_offset: 0.12,
   ground_snap_distance: 0.35,
+  ground_grace_distance: 0.12,
+  ground_grace_ticks: 2,
   max_walkable_slope: 50,
 };
 
@@ -125,10 +133,12 @@ function idleState() {
     current_speed: 0,
     horizontal_speed: 0,
     vertical_speed: 0,
+    gait_phase: 0,
     grounded: true,
     walkable_floor: true,
     ground_contact_confirmed: true,
     ground_contact_point: [0, 0, 0],
+    last_grounded_tick: 0,
     floor_normal: [0, 1, 0],
     floor_distance: 0,
     movement_mode: "grounded",
@@ -143,10 +153,21 @@ function idleState() {
     aim_pitch: 0,
     rotation_mode: "orient_to_movement",
     locomotion_phase: "idle",
-    action_layer: "none",
     life_state: "alive",
     jump_held: false,
     blocked_move_ticks: 0,
+  };
+}
+
+function channelSnapshot(state = "none", active = false, sequence = 0) {
+  return {
+    state,
+    active,
+    start_tick: sequence,
+    end_tick: active ? null : sequence,
+    sequence,
+    event_id: sequence === 0 ? "" : `test:${sequence}`,
+    blend_semantic: active ? "masked_override" : "none",
   };
 }
 
@@ -342,6 +363,27 @@ test("requested sprint remains distinct while actual gait ramps through speed ba
   assert.equal(deriveActualGait(0, tuning), "idle");
 });
 
+test("prediction advances gait phase by confirmed grounded distance and preserves it in air", () => {
+  let state = {
+    ...idleState(),
+    horizontal_speed: 2,
+    velocity: [0, 0, 2],
+    gait_phase: 0.98,
+  };
+  const grounded = predictMovementStep(state, input(1), tuning, dt);
+  assert.ok(grounded.gait_phase >= 0 && grounded.gait_phase < 1);
+  assert.ok(grounded.gait_phase < state.gait_phase || grounded.gait_phase > 0.98);
+  state = {
+    ...grounded,
+    grounded: false,
+    ground_contact_confirmed: false,
+    movement_mode: "airborne",
+    velocity: [0, 0, 2],
+  };
+  const airborne = predictMovementStep(state, input(2), tuning, dt);
+  assert.equal(airborne.gait_phase, state.gait_phase);
+});
+
 test("direction changes retain momentum and 180 degree pivots brake harder", () => {
   const quarterTurn = solveHorizontalVelocity([0, 0, 6.5], [6.5, 0, 0], dt, true, tuning, "run");
   const pivot = solveHorizontalVelocity([0, 0, 6.5], [0, 0, -6.5], dt, true, tuning, "run");
@@ -448,9 +490,51 @@ test("owner prediction restores an ACK and replays only remaining input history"
   assert.deepEqual(corrected.velocity, expected.velocity);
   assert.deepEqual(history.inputs.map(({ input: pending }) => pending.sequence), [2, 3]);
   assert.equal(history.metrics.reconciliation_count, 1);
-  assert.ok(history.metrics.position_error > 0);
-  assert.ok(history.metrics.velocity_error > 0);
-  assert.equal(history.metrics.large_correction_count, 1, JSON.stringify(history.metrics));
+  assert.equal(history.metrics.position_error, 0);
+  assert.equal(history.metrics.velocity_error, 0);
+  assert.equal(history.metrics.correction_position_error, 0);
+  assert.equal(history.metrics.large_correction_count, 0, JSON.stringify(history.metrics));
+});
+
+test("prediction history reports overflow and hard-resyncs when an ACK predates retained input", () => {
+  const history = new PredictionHistory(2, 0.001);
+  const base = idleState();
+  history.reset(base);
+  for (let sequence = 1; sequence <= 4; sequence++) {
+    history.predict(input(sequence), tuning, dt);
+  }
+  assert.equal(history.metrics.history_overflow_count, 2);
+  const authoritative = { ...base, position: [0.25, 0, 0] };
+  const state = history.reconcile(authoritative, 1, tuning, dt);
+  assert.deepEqual(state.position, authoritative.position);
+  assert.equal(history.metrics.hard_resync_count, 1);
+  assert.equal(history.metrics.last_resync_reason, "prediction_history_overflow");
+  assert.equal(history.metrics.discarded_input_count, 3);
+  assert.equal(history.inputs.length, 0);
+});
+
+test("prediction history rejects duplicate input sequences and ignores stale ACKs", () => {
+  const history = new PredictionHistory(8, 0.5);
+  const base = { ...idleState(), last_processed_input: -1 };
+  history.reset(base);
+  history.predict(input(1), tuning, dt);
+  history.predict(input(2), tuning, dt);
+  assert.throws(() => history.predict(input(2), tuning, dt), /sequences must increase/);
+
+  const ackState = history.inputs.at(-1).state;
+  history.reconcile(structuredClone(ackState), 2, tuning, dt);
+  const accepted = structuredClone(history.state);
+  const staleState = { ...base, position: [100, 0, 100] };
+  history.reconcile(staleState, 1, tuning, dt);
+  assert.deepEqual(history.state, accepted);
+  assert.equal(history.metrics.stale_ack_count, 1);
+  assert.equal(history.metrics.reconciliation_count, 1);
+  assert.throws(() => history.reconcile(ackState, 2.5, tuning, dt), /valid ACK/);
+  assert.throws(
+    () => history.reconcile(ackState, 3, tuning, dt),
+    /cannot exceed the latest predicted input sequence/,
+  );
+  assert.throws(() => history.reconcile({ ...base, position: [Number.NaN, 0, 0] }, 2, tuning, dt), /authoritative transform/);
 });
 
 test("visual transform smoothing eases position and yaw while large corrections snap", () => {
@@ -504,12 +588,42 @@ test("remote Hermite interpolation prevents stopping and pivot overshoot", () =>
   buffer.push({ tick: 60, position: [1, 0, 0], velocity: [0, 0, -20], character_yaw: 90, yaw_rate: 720 });
   const sample = buffer.sample(30, 60);
   assert.ok(sample.position[0] >= 0 && sample.position[0] <= 1);
-  assert.equal(sample.position[2], 0);
+  assert.equal(sample.position[2], 5);
+  assert.ok(Math.hypot(...sample.position) <= 20 * 0.5);
   assert.ok(sample.character_yaw >= 0 && sample.character_yaw <= 90);
   const stopped = new RemoteSnapshotBuffer();
   stopped.push({ tick: 0, position: [3, 0, 0], velocity: [10, 0, 0], character_yaw: 0 });
   stopped.push({ tick: 2, position: [3, 0, 0], velocity: [0, 0, 0], character_yaw: 0 });
   assert.deepEqual(stopped.sample(1, 60).position, [3, 0, 0]);
+});
+
+test("remote interpolation preserves lateral tangents and yaw rate across the angle seam", () => {
+  const buffer = new RemoteSnapshotBuffer(8, 10, {
+    maxVisualVelocity: 16,
+    maxVisualYawRate: 180,
+  });
+  buffer.push({
+    tick: 10,
+    position: [0, 0, 0],
+    velocity: [0, 0, 2],
+    character_yaw: 179,
+    yaw_rate: 60,
+  });
+  buffer.push({
+    tick: 20,
+    position: [1, 0, 0],
+    velocity: [0, 0, -2],
+    character_yaw: -179,
+    yaw_rate: 60,
+  });
+  const middle = buffer.sample(15, 60);
+  assert.ok(middle.position[2] > 0.07);
+  assert.ok(middle.position[2] < 0.1);
+  assert.ok(Math.abs(angleDelta(middle.character_yaw, 180)) < 1e-8);
+  const before = buffer.sample(14, 60);
+  const after = buffer.sample(16, 60);
+  assert.ok(Math.abs(angleDelta(after.character_yaw, before.character_yaw)) < 1);
+  assert.throws(() => buffer.push({ tick: 21, position: [0, 0], velocity: [0, 0, 0] }), /finite tick/);
 });
 
 test("server clock estimates current server tick from arrival and RTT", () => {
@@ -520,6 +634,25 @@ test("server clock estimates current server tick from arrival and RTT", () => {
   assert.ok(Math.abs(clock.estimateTick(10100) - 609) < 0.01);
   assert.equal(clock.observationCount, 2);
   assert.equal(clock.observe(606, 100100, 100), false);
+});
+
+test("fixed-step input scheduler limits catch-up bursts and tolerates clock resets", () => {
+  const scheduler = new FixedStepScheduler(60, 3);
+  scheduler.reset(0);
+  assert.deepEqual(scheduler.advance(8), []);
+  const first = scheduler.advance(18);
+  assert.equal(first.length, 1);
+  assert.ok(Math.abs(first[0] - 1000 / 60) < 1e-6);
+
+  const catchup = scheduler.advance(218);
+  assert.equal(catchup.length, 3);
+  for (let index = 1; index < catchup.length; index++) {
+    assert.ok(Math.abs(catchup[index] - catchup[index - 1] - 1000 / 60) < 1e-6);
+  }
+  assert.deepEqual(scheduler.advance(100), []);
+  assert.deepEqual(scheduler.advance(108), []);
+  assert.equal(scheduler.advance(118).length, 1);
+  assert.throws(() => scheduler.advance(Number.NaN), /time must be finite/);
 });
 
 test("adaptive interpolation delay follows snapshot cadence, jitter, and RTT variance", () => {
@@ -551,10 +684,11 @@ test("collision prediction stops at cover and preserves tangential wall motion",
     ground_contact_point: [0, 0, -3],
     simulation_tick: 1,
   };
+  const sprintInput = (sequence) => ({ ...input(sequence), requested_gait: "sprint" });
   for (let sequence = 1; sequence <= 120; sequence++) {
     state = predictMovementStep(
       state,
-      input(sequence),
+      sprintInput(sequence),
       collisionTuning,
       dt,
       collisionWorld,
@@ -572,11 +706,11 @@ test("collision prediction stops at cover and preserves tangential wall motion",
   };
   history.reset(baseState);
   for (let sequence = 1; sequence <= 120; sequence++) {
-    history.predict(input(sequence), collisionTuning, dt, collisionWorld);
+    history.predict(sprintInput(sequence), collisionTuning, dt, collisionWorld);
   }
   const acknowledged = predictMovementStep(
     baseState,
-    input(1),
+    sprintInput(1),
     collisionTuning,
     dt,
     collisionWorld,
@@ -588,8 +722,11 @@ test("collision prediction stops at cover and preserves tangential wall motion",
   const replayed = history.reconcile(acknowledged, 1, collisionTuning, dt, collisionWorld);
   assertVector(replayed.position, state.position, "collision replay position");
   assertVector(replayed.velocity, state.velocity, "collision replay velocity");
-  assert.equal(history.metrics.large_correction_count, 1, JSON.stringify(history.metrics));
-  assert.ok(history.metrics.position_error > 0.5);
+  assert.equal(history.metrics.large_correction_count, 0, JSON.stringify(history.metrics));
+  assert.equal(history.metrics.position_error, 0);
+  assert.equal(history.metrics.correction_position_error, 0);
+  assert.equal(state.actual_gait, "idle");
+  assert.equal(createMotionFrame({ ...state, requested_gait: "sprint" }, 120).actualGait, "idle");
 
   const alongWall = collisionWorld.moveCharacter(
     { ...state, position: [1.56, 0.9, -3], blocked_move_ticks: 0 },
@@ -599,6 +736,170 @@ test("collision prediction stops at cover and preserves tangential wall motion",
     dt,
   );
   assert.ok(alongWall.position[2] > -3);
+});
+
+test("ground grace remains grounded but cannot predict a jump without confirmed contact", () => {
+  const gapWorld = new CollisionWorld({ version: 1, planes: [], boxes: [], ramps: [] });
+  const graceState = {
+    ...idleState(),
+    position: [0, 0.9, 0],
+    simulation_tick: 3,
+    last_grounded_tick: 2,
+    grounded: true,
+    ground_contact_confirmed: false,
+    floor_distance: 0,
+  };
+  const jumped = predictMovementStep(
+    graceState,
+    { ...input(1, 0), jump: true },
+    collisionTuning,
+    dt,
+    gapWorld,
+  );
+  assert.equal(jumped.grounded, true);
+  assert.equal(jumped.ground_contact_confirmed, false);
+  assert.equal(jumped.ground_grace_active, true);
+  assert.notEqual(jumped.locomotion_phase, "jump_start");
+  assert.ok(jumped.velocity[1] < 1);
+
+  const history = new PredictionHistory(256, 0.001);
+  history.reset(graceState);
+  const predicted = history.predict(
+    { ...input(1, 0), jump: true }, collisionTuning, dt, gapWorld,
+  );
+  history.reconcile(structuredClone(predicted), 1, collisionTuning, dt, gapWorld);
+  assert.equal(history.metrics.large_correction_count, 0);
+});
+
+test("ramp side and high-end sweeps block penetration while preserving wall slides", () => {
+  const ramp = {
+    name: "walkable-ramp",
+    center: [0, 0.95, 0],
+    half_extents: [2, 0.15, 2],
+    pitch_degrees: -20,
+  };
+  const floor = { name: "floor", normal: [0, 1, 0], constant: 0 };
+  const rampWorld = new CollisionWorld({ version: 1, planes: [floor], boxes: [], ramps: [ramp] });
+  const halfHeight = collisionTuning.character_radius +
+    collisionTuning.character_cylinder_height / 2;
+  const topAt = (z) => {
+    const pitch = ramp.pitch_degrees * Math.PI / 180;
+    const topY = ramp.center[1] + Math.cos(pitch) * ramp.half_extents[1];
+    const topZ = ramp.center[2] + Math.sin(pitch) * ramp.half_extents[1];
+    return topY - Math.tan(pitch) * (z - topZ);
+  };
+
+  const sideY = topAt(0) + halfHeight;
+  const side = rampWorld.moveCharacter(
+    { ...idleState(), position: [1.5, sideY, 0], ground_contact_point: [1.5, topAt(0), 0] },
+    [3, sideY, 0],
+    [90, 0, 0],
+    collisionTuning,
+    dt,
+  );
+  assert.ok(side.position[0] <= 1.56, JSON.stringify(side));
+  assert.equal(side.grounded, true);
+
+  const highEndStartZ = 1;
+  const highEndY = topAt(highEndStartZ) + halfHeight;
+  const highEnd = rampWorld.moveCharacter(
+    {
+      ...idleState(),
+      position: [0, highEndY, highEndStartZ],
+      ground_contact_point: [0, topAt(highEndStartZ), highEndStartZ],
+    },
+    [0, highEndY, 3],
+    [0, 0, 120],
+    collisionTuning,
+    dt,
+  );
+  assert.ok(highEnd.position[2] < 1.5, JSON.stringify(highEnd));
+
+  const wallWorld = new CollisionWorld({
+    version: 1,
+    planes: [floor],
+    boxes: [{ name: "wall", center: [1.4, 1.5, 3], half_extents: [1.2, 1.5, 0.3] }],
+    ramps: [ramp],
+  });
+  const combined = wallWorld.moveCharacter(
+    { ...idleState(), position: [1.5, sideY, 0], ground_contact_point: [1.5, topAt(0), 0] },
+    [3, sideY, 3],
+    [90, 0, 180],
+    collisionTuning,
+    dt,
+  );
+  assert.ok(combined.position[0] <= 1.56, JSON.stringify(combined));
+  assert.ok(combined.position[2] <= 2.26, JSON.stringify(combined));
+});
+
+test("foot probes find bounded floor, step, and ramp supports from collision geometry", () => {
+  const world = new CollisionWorld({
+    version: 1,
+    planes: [{ name: "floor", normal: [0, 1, 0], constant: 0 }],
+    boxes: [{ name: "step", center: [0, 0.15, 0.2], half_extents: [1, 0.15, 0.5] }],
+    ramps: [{
+      name: "ramp",
+      center: [4, 0.95, 0],
+      half_extents: [2, 0.15, 2],
+      pitch_degrees: -20,
+    }],
+  });
+  const floor = world.probeFoot([4, 0.1, 4], collisionTuning);
+  assert.equal(floor.grounded, true);
+  assert.equal(floor.entity, "floor");
+  assert.equal(floor.distance, 0.1);
+
+  const step = world.probeFoot([0, 0.3, 0.2], collisionTuning);
+  assert.equal(step.grounded, true);
+  assert.equal(step.entity, "step");
+  assert.deepEqual(step.normal, [0, 1, 0]);
+  assert.equal(world.probeFoot([0, 0.7, 0.2], collisionTuning).grounded, false);
+
+  const ramp = world.probeFoot([4, 1.2, 0], collisionTuning, { maxDistance: 1 });
+  assert.equal(ramp.entity, "ramp");
+  assert.ok(ramp.normal[1] > 0.9);
+  assert.throws(() => world.probeFoot([0, Number.NaN, 0], collisionTuning), /finite position/);
+});
+
+test("continuous ramp movement does not accumulate ACK-timeline corrections", () => {
+  const ramp = {
+    name: "walkable-ramp",
+    center: [0, 0.95, 0],
+    half_extents: [2, 0.15, 2],
+    pitch_degrees: -20,
+  };
+  const rampWorld = new CollisionWorld({
+    version: 1,
+    planes: [{ name: "floor", normal: [0, 1, 0], constant: 0 }],
+    boxes: [],
+    ramps: [ramp],
+  });
+  const halfHeight = collisionTuning.character_radius +
+    collisionTuning.character_cylinder_height / 2;
+  const pitch = ramp.pitch_degrees * Math.PI / 180;
+  const surfaceY = ramp.center[1] + Math.cos(pitch) * ramp.half_extents[1] -
+    Math.tan(pitch) * (-1 - Math.sin(pitch) * ramp.half_extents[1]);
+  const base = {
+    ...idleState(),
+    position: [0, surfaceY + halfHeight, -1],
+    ground_contact_point: [0, surfaceY, -1],
+    simulation_tick: 1,
+  };
+  const history = new PredictionHistory(256, 0.001);
+  history.reset(base);
+  for (let sequence = 1; sequence <= 180; sequence++) {
+    history.predict(input(sequence), collisionTuning, dt, rampWorld);
+    if (sequence % 3 === 0) {
+      const acknowledged = history.inputs.find(({ input: pending }) =>
+        pending.sequence === sequence)?.state;
+      assert.ok(acknowledged, `missing predicted ACK state ${sequence}`);
+      history.reconcile(structuredClone(acknowledged), sequence, collisionTuning, dt, rampWorld);
+    }
+  }
+  assert.equal(history.metrics.reconciliation_count, 60);
+  assert.equal(history.metrics.large_correction_count, 0, JSON.stringify(history.metrics));
+  assert.equal(history.metrics.position_error, 0);
+  assert.equal(history.metrics.correction_position_error, 0);
 });
 
 test("collision prediction steps up a low box and lands after falling", () => {
@@ -631,6 +932,22 @@ test("collision prediction steps up a low box and lands after falling", () => {
   assert.equal(stepped, true);
   assert.equal(state.ground_entity, "step");
   assert.ok(state.position[1] >= 1.2);
+  const stepHeight = state.position[1];
+  let returnedToFloor = false;
+  for (let sequence = 61; sequence <= 120; sequence++) {
+    state = predictMovementStep(
+      state,
+      input(sequence, -1),
+      collisionTuning,
+      dt,
+      stepWorld,
+    );
+    if (state.ground_entity === "floor" && state.position[1] < stepHeight - 0.05) {
+      returnedToFloor = true;
+      break;
+    }
+  }
+  assert.equal(returnedToFloor, true);
 
   const floorWorld = new CollisionWorld({
     version: 1,
@@ -668,6 +985,166 @@ test("collision prediction steps up a low box and lands after falling", () => {
   assert.ok(["soft_land", "normal_land", "heavy_land"].includes(state.locomotion_phase));
 });
 
+test("bounded step solving handles supported risers without adding a forward lunge", () => {
+  const runStep = (height, extraBoxes = []) => {
+    const stepWorld = new CollisionWorld({
+      version: 1,
+      planes: [{ name: "floor", normal: [0, 1, 0], constant: 0 }],
+      boxes: [
+        { name: "step", center: [0, height / 2, 0.2], half_extents: [1, height / 2, 0.5] },
+        ...extraBoxes,
+      ],
+      ramps: [],
+    });
+    let state = {
+      ...idleState(),
+      position: [0, 0.9, -1],
+      ground_contact_point: [0, 0, -1],
+      simulation_tick: 1,
+    };
+    let maxTickDisplacement = 0;
+    for (let sequence = 1; sequence <= 90; sequence++) {
+      const previous = state.position;
+      state = predictMovementStep(state, input(sequence), collisionTuning, dt, stepWorld);
+      maxTickDisplacement = Math.max(
+        maxTickDisplacement,
+        Math.hypot(
+          state.position[0] - previous[0],
+          state.position[2] - previous[2],
+        ),
+      );
+      if (state.step_up) break;
+    }
+    return { state, maxTickDisplacement };
+  };
+
+  for (const height of [0.1, 0.2, collisionTuning.character_step_height]) {
+    const result = runStep(height);
+    assert.equal(result.state.step_up, true, `step height ${height}`);
+    assert.equal(result.state.ground_entity, "step");
+    assert.ok(Math.abs(result.state.position[1] - (0.9 + height)) <= 0.002);
+    assert.ok(
+      result.maxTickDisplacement <= collisionTuning.run_speed * dt + 0.002,
+      `step height ${height} moved ${result.maxTickDisplacement}m in one tick`,
+    );
+  }
+
+  const tooHigh = runStep(collisionTuning.character_step_height + 0.01);
+  assert.equal(tooHigh.state.step_up, false);
+  assert.ok(tooHigh.state.position[2] < -0.7);
+
+  const overhead = runStep(0.2, [
+    { name: "overhead", center: [0, 2.02, 0.2], half_extents: [1, 0.2, 0.5] },
+  ]);
+  assert.equal(overhead.state.step_up, false);
+  assert.ok(overhead.state.position[2] < -0.7);
+});
+
+test("step traversal stays bounded beside walls, on diagonals, and across repeated stairs", () => {
+  const makeWorld = (boxes) => new CollisionWorld({
+    version: 1,
+    planes: [{ name: "floor", normal: [0, 1, 0], constant: 0 }],
+    boxes,
+    ramps: [],
+  });
+  const stair = { name: "step", center: [0, 0.1, 0.2], half_extents: [1, 0.1, 0.5] };
+  const besideWall = makeWorld([
+    stair,
+    { name: "wall", center: [1.3, 0.9, 0.2], half_extents: [0.2, 0.9, 0.5] },
+  ]);
+  let state = {
+    ...idleState(),
+    position: [0, 0.9, -1],
+    ground_contact_point: [0, 0, -1],
+    simulation_tick: 1,
+  };
+  let steppedBesideWall = false;
+  for (let sequence = 1; sequence <= 120; sequence++) {
+    const previous = state.position;
+    state = predictMovementStep(
+      state,
+      { ...input(sequence), move_x: 0.7 },
+      collisionTuning,
+      dt,
+      besideWall,
+    );
+    assert.ok(
+      Math.hypot(state.position[0] - previous[0], state.position[2] - previous[2])
+        <= collisionTuning.run_speed * dt + 0.002,
+    );
+    if (state.step_up) {
+      steppedBesideWall = true;
+      break;
+    }
+  }
+  assert.equal(steppedBesideWall, true);
+  assert.ok(state.position[0] < 0.71, JSON.stringify(state));
+
+  const diagonalWorld = makeWorld([{
+    name: "diagonal-step",
+    center: [0, 0.15, 0.2],
+    half_extents: [0.75, 0.15, 0.5],
+  }]);
+  state = {
+    ...idleState(),
+    position: [0, 0.9, -1],
+    ground_contact_point: [0, 0, -1],
+    simulation_tick: 1,
+  };
+  let steppedDiagonally = false;
+  for (let sequence = 1; sequence <= 150; sequence++) {
+    const previous = state.position;
+    state = predictMovementStep(
+      state,
+      { ...input(sequence), move_x: 0.25, move_z: 1 },
+      collisionTuning,
+      dt,
+      diagonalWorld,
+    );
+    assert.ok(
+      Math.hypot(state.position[0] - previous[0], state.position[2] - previous[2])
+        <= collisionTuning.run_speed * dt + 0.002,
+    );
+    if (state.step_up) {
+      steppedDiagonally = true;
+      break;
+    }
+  }
+  assert.equal(steppedDiagonally, true, JSON.stringify(state));
+
+  const stairs = [0.1, 0.2, 0.3].map((height, index) => ({
+    name: `stair-${index + 1}`,
+    center: [0, height / 2, 0.2 + index * 0.5],
+    half_extents: [1, height / 2, 0.5],
+  }));
+  const stairWorld = makeWorld(stairs);
+  const base = {
+    ...idleState(),
+    position: [0, 0.9, -1],
+    ground_contact_point: [0, 0, -1],
+    simulation_tick: 1,
+  };
+  const history = new PredictionHistory(256, 0.001);
+  history.reset(base);
+  let reachedThirdStair = false;
+  for (let sequence = 1; sequence <= 180; sequence++) {
+    const previous = history.state.position;
+    const predicted = history.predict(input(sequence), collisionTuning, dt, stairWorld);
+    assert.ok(
+      Math.hypot(predicted.position[0] - previous[0], predicted.position[2] - previous[2])
+        <= collisionTuning.run_speed * dt + 0.002,
+    );
+    if (predicted.ground_entity === "stair-3") reachedThirdStair = true;
+  }
+  const predictedEnd = structuredClone(history.state);
+  const ack = history.inputs.find(({ input: pending }) => pending.sequence === 1)?.state;
+  assert.ok(ack);
+  const replayed = history.reconcile(structuredClone(ack), 1, collisionTuning, dt, stairWorld);
+  assert.equal(reachedThirdStair, true);
+  assert.deepEqual(replayed.position, predictedEnd.position);
+  assert.equal(history.metrics.large_correction_count, 0);
+});
+
 test("MotionFrame carries animation channels and bounded motion history", () => {
   const state = {
     ...idleState(),
@@ -681,7 +1158,10 @@ test("MotionFrame carries animation channels and bounded motion history", () => 
     remaining_turn_angle: -49.5,
     turn_direction: "left",
     turn_progress: 0.45,
-    action_layer: "hit_reaction",
+    action_channels: {
+      additive_reaction: channelSnapshot("hit_reaction", true, 1),
+    },
+    gait_phase: 0.98,
   };
   const frame = createMotionFrame(state, 100, dt);
   assert.equal(frame.tick, 100);
@@ -689,7 +1169,11 @@ test("MotionFrame carries animation channels and bounded motion history", () => 
   assert.equal(frame.turnDirection, "left");
   assert.equal(frame.turnProgress, 0.45);
   assert.equal(frame.remainingTurnAngle, -49.5);
-  assert.deepEqual(frame.actionLayers, ["hit_reaction"]);
+  assert.equal(frame.gaitPhase, 0.98);
+  assert.deepEqual(frame.actionLayers.map(({ channel, state }) => [channel, state]), [
+    ["additive_reaction", "hit_reaction"],
+  ]);
+  assert.equal(frame.actionChannels.additive_reaction.active, true);
   assert.equal(frame.footIK.leftFootGroundDistance, null);
   assert.ok(Math.abs(frame.movementDirection - (Math.atan2(1, 2) * 180 / Math.PI - 15)) < 1e-9);
   const motionHistory = new MotionHistory(2);
@@ -699,6 +1183,39 @@ test("MotionFrame carries animation channels and bounded motion history", () => 
   assert.equal(motionHistory.latest().length, 2);
 });
 
+test("action channel cursor deduplicates events and rejects stale or reused revisions", () => {
+  const cursor = new ActionChannelSnapshotCursor();
+  const baseline = {
+    locomotion: channelSnapshot("grounded:run:loop", true, 1),
+    upper_body_action: channelSnapshot("shoot", true, 1),
+    additive_reaction: channelSnapshot("hit_reaction", true, 1),
+    full_body_override: channelSnapshot(),
+    life_override: channelSnapshot(),
+  };
+  const first = cursor.apply(baseline);
+  assert.deepEqual(first.startedEvents.map(({ channel }) => channel), [
+    "upper_body_action", "additive_reaction",
+  ]);
+  assert.equal(cursor.apply(baseline).startedEvents.length, 0);
+
+  const newer = {
+    ...baseline,
+    upper_body_action: channelSnapshot("none", false, 2),
+    additive_reaction: channelSnapshot("hit_reaction", true, 2),
+  };
+  const advanced = cursor.apply(newer);
+  assert.deepEqual(advanced.startedEvents.map(({ channel }) => channel), ["additive_reaction"]);
+  const reordered = cursor.apply(baseline);
+  assert.equal(reordered.startedEvents.length, 0);
+  assert.equal(reordered.channels.upper_body_action.active, false);
+  assert.equal(reordered.channels.additive_reaction.sequence, 2);
+
+  assert.throws(() => cursor.apply({
+    ...newer,
+    additive_reaction: { ...newer.additive_reaction, active: false },
+  }), /reused sequence/);
+});
+
 test("animation graph returns normalized blend, additive aim, and warp semantics", () => {
   const frame = createMotionFrame({
     ...idleState(),
@@ -706,7 +1223,9 @@ test("animation graph returns normalized blend, additive aim, and warp semantics
     velocity: [0, 0, 4.5],
     aim_yaw: 220,
     aim_pitch: -95,
-    action_layer: "hit_reaction",
+    action_channels: {
+      additive_reaction: channelSnapshot("hit_reaction", true, 1),
+    },
     hit_strength: 0.6,
   }, 10);
   const weights = evaluateBlendSpace(frame, tuning.sprint_speed);
@@ -735,6 +1254,21 @@ test("blend space selects local samples with a circular direction axis", () => {
   assert.ok(Math.abs(positiveSeam.run_left - negativeSeam.run_right) < 0.04);
   assert.ok(Math.abs(positiveSeam.run_right - negativeSeam.run_left) < 0.04);
   assert.equal(Object.values(positiveSeam).filter((weight) => weight > 0).length, 3);
+});
+
+test("blend space has exact walk and run samples for eight movement directions", () => {
+  const directions = [
+    ["forward", 0], ["forward_right", 45], ["right", 90], ["backward_right", 135],
+    ["backward", 180], ["backward_left", -135], ["left", -90], ["forward_left", -45],
+  ];
+  for (const [gait, speed] of [["walk", 2], ["run", 4.5]]) {
+    for (const [direction, degrees] of directions) {
+      const weights = evaluateBlendSpace({ movementDirection: degrees, horizontalSpeed: speed }, 6.5);
+      const selected = `${gait}_${direction}`;
+      assert.equal(weights[selected], 1, `${selected} at ${degrees} degrees`);
+      assert.equal(Object.values(weights).filter((weight) => weight > 0).length, 1);
+    }
+  }
 });
 
 test("blend weight smoothing clamps and normalizes each result", () => {
@@ -893,12 +1427,17 @@ test("pose animation graph evaluates motion weights, additive aim, and action po
     horizontal_speed: 2.5,
     aim_yaw: 30,
     aim_pitch: 0,
-    action_layers: ["shoot", "hit_reaction"],
+    action_channels: {
+      upper_body_action: channelSnapshot("shoot", true, 1),
+      additive_reaction: channelSnapshot("hit_reaction", true, 1),
+    },
   }, 20);
   const poseLibrary = {
     locomotionPoses: Object.fromEntries([
-      "idle", "walk_forward", "walk_backward", "walk_left", "walk_right",
-      "run_forward", "run_backward", "run_left", "run_right", "sprint",
+      "idle",
+      ...["forward", "forward_right", "right", "backward_right", "backward", "backward_left", "left", "forward_left"]
+        .flatMap((direction) => [`walk_${direction}`, `run_${direction}`]),
+      "sprint",
     ].map((name) => [name, name.startsWith("walk") ? raised : neutral])),
     aimOffsetPoses: Object.fromEntries([
       "down_left", "down", "down_right", "left", "center", "right", "up_left", "up", "up_right",
@@ -911,18 +1450,22 @@ test("pose animation graph evaluates motion weights, additive aim, and action po
       weight: 0.5,
     }],
     actionPoses: {
-      shoot: {
-        channel: AnimationLayerChannel.UPPER_BODY_ACTION,
-        mode: "override",
-        pose: raised,
-        weight: 1,
-        boneMask: BoneMask.fromNames(skeleton, ["spine"]),
+      upper_body_action: {
+        shoot: {
+          channel: AnimationLayerChannel.UPPER_BODY_ACTION,
+          mode: "override",
+          pose: raised,
+          weight: 1,
+          boneMask: BoneMask.fromNames(skeleton, ["spine"]),
+        },
       },
-      hit_reaction: {
-        channel: AnimationLayerChannel.ADDITIVE_REACTION,
-        mode: "additive",
-        pose: raised,
-        weight: 0.25,
+      additive_reaction: {
+        hit_reaction: {
+          channel: AnimationLayerChannel.ADDITIVE_REACTION,
+          mode: "additive",
+          pose: raised,
+          weight: 0.25,
+        },
       },
     },
   };
@@ -936,7 +1479,7 @@ test("pose animation graph evaluates motion weights, additive aim, and action po
   assert.ok(graph.pose instanceof Pose);
   assert.ok(graph.selectedLocomotionSamples.length <= 3);
   assert.deepEqual(graph.activePoseLayers.map(({ name }) => name), [
-    "test-hit", "action:shoot", "action:hit_reaction",
+    "test-hit", "action:upper_body_action:shoot", "action:additive_reaction:hit_reaction",
   ]);
   assert.ok(graph.pose.localTransforms[1].translation[1] > 0);
 });
@@ -990,6 +1533,8 @@ test("orientation warp distributes yaw through the synthetic skeleton pose", () 
   assert.ok(Math.abs(yawOf(worlds[skeleton.indexByName.get("left_foot")].rotation) - 36) < 1e-8);
   assert.throws(() => warpPoseOrientation(makePose(), 90, 0, { root: 0.5 }), /sum to one/);
   assert.throws(() => warpPoseOrientation(makePose(), 0, 0, { root: 1, missing: 0 }), /missing/);
+  assert.equal(orientationWarpAngle(179, -179), -2);
+  assert.equal(orientationWarpAngle(-179, 179), 2);
 });
 
 test("visual root offset remains bounded and root motion maps clip-local deltas into simulation facing", () => {
@@ -1051,6 +1596,33 @@ test("root motion warping transforms clip-local deltas before solving a world-sp
   assert.equal(transform.character_yaw, target.yaw);
 });
 
+test("root motion warp is restricted by a smooth action-time window", () => {
+  const window = new MotionWarpWindow(0.1, 0.9, { blendInSeconds: 0.2, blendOutSeconds: 0.2 });
+  assert.equal(window.weightAt(0.05), 0);
+  assert.equal(window.weightAt(0.1), 0);
+  assert.ok(window.weightAt(0.2) > 0 && window.weightAt(0.2) < 1);
+  assert.equal(window.weightAt(0.5), 1);
+  assert.equal(window.weightAt(0.9), 0);
+  assert.equal(window.weightAt(1), 0);
+  assert.throws(() => new MotionWarpWindow(1, 0), /bounds and blends/);
+
+  const target = new MotionWarpTarget("windowed", [10, 0, 0], 90, window);
+  const args = [
+    { translation: [1, 0, 0], yawDelta: 0 },
+    { position: [0, 0, 0], character_yaw: 0 },
+    [4, 0, 0],
+    target,
+  ];
+  assert.throws(() => warpRootMotionDelta(...args), /requires root delta/);
+  const outside = warpRootMotionDelta(...args, 1, 0, 1.1);
+  assert.deepEqual(outside.translation, [1, 0, 0]);
+  assert.equal(outside.yawDelta, 0);
+  assert.equal(outside.effectiveWeight, 0);
+  const inside = warpRootMotionDelta(...args, 1, 0, 0.5);
+  assert.ok(inside.translation[0] > outside.translation[0]);
+  assert.equal(inside.effectiveWeight, 1);
+});
+
 test("trajectory rollout replays future intent through the collision solver", () => {
   const wallWorld = new CollisionWorld({
     version: 1,
@@ -1082,12 +1654,20 @@ test("pose history stores sampled bones and pose search selects trajectory-consi
     velocity: [0, 0, speed],
     facing,
   }];
-  const makeCandidate = (clipName, pose, velocity, trajectory, timeSeconds = 0) => {
+  const makeCandidate = (
+    clipName,
+    pose,
+    velocity,
+    trajectory,
+    timeSeconds = 0,
+    contacts = { left: false, right: false },
+  ) => {
     const history = new PoseHistory(2);
     return history.push(pose, {
       tick: 1,
       rootVelocity: velocity,
       trajectory,
+      contacts,
       clipName,
       timeSeconds,
     });
@@ -1097,8 +1677,14 @@ test("pose history stores sampled bones and pose search selects trajectory-consi
   const pivotPose = makePose({ rootYaw: 180, leftFoot: [-0.2, -1, -0.25], rightFoot: [0.2, -1, 0.25] });
   const samples = [
     makeCandidate("idle", idlePose, [0, 0, 0], trajectoryFor(0, 0)),
-    makeCandidate("run-forward", runPose, [0, 0, 3], trajectoryFor(0.6, 3)),
-    makeCandidate("pivot-back", pivotPose, [0, 0, -2], trajectoryFor(-0.4, -2, 180)),
+    makeCandidate("run-forward", runPose, [0, 0, 3], trajectoryFor(0.6, 3), 0, {
+      left: true,
+      right: false,
+    }),
+    makeCandidate("pivot-back", pivotPose, [0, 0, -2], trajectoryFor(-0.4, -2, 180), 0, {
+      left: false,
+      right: true,
+    }),
   ];
   const database = new PoseDatabase(samples.map((sample) => ({
     id: sample.id,
@@ -1106,6 +1692,7 @@ test("pose history stores sampled bones and pose search selects trajectory-consi
     timeSeconds: sample.timeSeconds,
     pose: sample.pose,
     features: sample.features,
+    metadata: { durationSeconds: 1 },
   })));
   const inconsistentFeatures = {
     ...samples[0].features,
@@ -1119,7 +1706,11 @@ test("pose history stores sampled bones and pose search selects trajectory-consi
     ...samples.slice(0, 1),
     { ...samples[0], id: "idle-other-skeleton", pose: otherSkeletonPose },
   ]), /one skeleton instance/);
-  const matcher = new MotionMatcher(new PoseSearch(database), { candidateLimit: 3 });
+  const matcher = new MotionMatcher(new PoseSearch(database), {
+    candidateLimit: 3,
+    minimumHoldSeconds: 0,
+    switchCostThreshold: 0,
+  });
   assert.throws(() => matcher.update({
     pose: otherSkeletonPose,
     rootVelocity: [0, 0, 0],
@@ -1129,18 +1720,65 @@ test("pose history stores sampled bones and pose search selects trajectory-consi
     pose: runPose,
     rootVelocity: [0, 0, 3],
     trajectory: trajectoryFor(0.6, 3),
+    contacts: { left: true, right: false },
   });
   assert.equal(selectedRun.selectedClip, "run-forward");
   assert.equal(selectedRun.candidateCount, 3);
   assert.equal(selectedRun.transitionReason, "initial_pose_match");
   assert.equal(selectedRun.costs.total, 0);
+  assert.equal(selectedRun.costs.contacts, 0);
+  assert.ok(Object.values(matcher.poseSearch.normalizationScales).every((scale) => scale > 0));
+  const continuedRun = matcher.update({
+    pose: runPose,
+    rootVelocity: [0, 0, 3],
+    trajectory: trajectoryFor(0.6, 3),
+    contacts: { left: true, right: false },
+    dt: 0.05,
+  });
+  assert.equal(continuedRun.selectedClip, "run-forward");
+  assert.ok(Math.abs(continuedRun.playbackTimeSeconds - 0.05) < 1e-9);
   const selectedPivot = matcher.update({
     pose: pivotPose,
     rootVelocity: [0, 0, -2],
     trajectory: trajectoryFor(-0.4, -2, 180),
+    contacts: { left: false, right: true },
   });
   assert.equal(selectedPivot.selectedClip, "pivot-back");
   assert.equal(selectedPivot.transitionReason, "lower_weighted_motion_cost");
+
+  const stableMatcher = new MotionMatcher(new PoseSearch(database), {
+    candidateLimit: 2,
+    minimumHoldSeconds: 0.05,
+    switchCostThreshold: 0.1,
+  });
+  stableMatcher.update({
+    pose: runPose,
+    rootVelocity: [0, 0, 3],
+    trajectory: trajectoryFor(0.6, 3),
+    contacts: { left: true, right: false },
+  });
+  const held = stableMatcher.update({
+    pose: pivotPose,
+    rootVelocity: [0, 0, -2],
+    trajectory: trajectoryFor(-0.4, -2, 180),
+    contacts: { left: false, right: true },
+    dt: 1 / 60,
+  });
+  assert.equal(held.selectedClip, "run-forward");
+  assert.equal(held.transitionReason, "minimum_hold");
+  let settled = held;
+  for (let index = 0; index < 8; index++) {
+    settled = stableMatcher.update({
+      pose: pivotPose,
+      rootVelocity: [0, 0, -2],
+      trajectory: trajectoryFor(-0.4, -2, 180),
+      contacts: { left: false, right: true },
+      dt: 1 / 60,
+    });
+    if (settled.selectedClip === "pivot-back") break;
+  }
+  assert.equal(settled.selectedClip, "pivot-back");
+  assert.equal(settled.transitionReason, "lower_weighted_motion_cost");
   assert.throws(() => new PoseSearch(database, { approximate: 1 }), /unknown pose search cost/);
   assert.throws(() => database.candidates[0].features.vector.push(1), TypeError);
 
@@ -1170,6 +1808,14 @@ test("pose history stores sampled bones and pose search selects trajectory-consi
   assert.throws(() => history.push(moved, {
     tick: 3, rootVelocity: [0, 0, 0], clipName: "history", timeSeconds: 0.2, dt: Infinity,
   }), /invalid/);
+  const sameTimeHistory = new PoseHistory(2);
+  const nearTimeA = sameTimeHistory.push(makePose(), {
+    tick: 1, rootVelocity: [0, 0, 0], clipName: "same-time", timeSeconds: 0.0000001,
+  });
+  const nearTimeB = sameTimeHistory.push(makePose(), {
+    tick: 2, rootVelocity: [0, 0, 0], clipName: "same-time", timeSeconds: 0.0000002,
+  });
+  assert.notEqual(nearTimeA.id, nearTimeB.id);
   history.push(makePose({ rootPosition: [0, 0, 1] }), {
     tick: 3, rootVelocity: [0, 0, 1], clipName: "history", timeSeconds: 2 * dt,
   });

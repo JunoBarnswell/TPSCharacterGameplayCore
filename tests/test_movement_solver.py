@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from aster_game.app.config import Settings
-from aster_game.game.components import InputCommand
+from aster_game.game.components import AnimationChannelState, InputCommand
 from aster_game.game.events import DamageRequest, DamageType
 from aster_game.game.movement.solver import (
     derive_actual_gait,
@@ -19,7 +19,6 @@ from aster_game.game.movement.solver import (
     solve_rotation,
 )
 from aster_game.game.movement.state import (
-    ActionLayer,
     Gait,
     LifeState,
     LocomotionPhase,
@@ -386,7 +385,21 @@ def test_walking_off_edge_starts_falling_without_fake_apex() -> None:
         world.close()
 
 
-def test_hit_reaction_is_an_action_layer_over_locomotion() -> None:
+def test_restarted_locomotion_transition_advances_channel_revision() -> None:
+    channel = AnimationChannelState("locomotion")
+    channel.set_locomotion_state("grounded:run:start", 10, 22, "transition")
+    first = channel.snapshot()
+
+    channel.set_locomotion_state("grounded:run:start", 22, 34, "transition")
+    second = channel.snapshot()
+
+    assert second["sequence"] == first["sequence"] + 1
+    assert second["event_id"] != first["event_id"]
+    assert second["start_tick"] == 22
+    assert second["end_tick"] == 34
+
+
+def test_hit_reaction_uses_independent_channel_over_locomotion() -> None:
     world = make_world()
     try:
         character = world.add_player("p", "Pilot")
@@ -424,10 +437,122 @@ def test_hit_reaction_is_an_action_layer_over_locomotion() -> None:
             ),
         )
         events = world.tick(world.settings.fixed_dt)
-        assert character.action_layer is ActionLayer.HIT_REACTION
+        reaction = character.action_channels.additive_reaction
+        assert reaction.active
+        assert reaction.state == "hit_reaction"
+        assert reaction.blend_semantic == "additive"
+        assert character.action_channels.locomotion.active
         assert character.movement.locomotion_phase is LocomotionPhase.LOOP
         assert any(event.type == "hit_reaction" for event in events)
         assert character.life_state is LifeState.ALIVE
+    finally:
+        world.close()
+
+
+def test_shoot_and_hit_channels_overlap_then_expire_independently() -> None:
+    world = make_world()
+    try:
+        character = world.add_player("p", "Pilot")
+        settle(world)
+        world.attack_requests.append(character.entity_id)
+        world.damage_requests.append(
+            DamageRequest(
+                source_entity_id=None,
+                target_entity_id=character.entity_id,
+                damage_type=DamageType.ENVIRONMENT,
+                amount=5.0,
+                hit_direction=(0.0, 0.0, -1.0),
+            )
+        )
+        world.tick(world.settings.fixed_dt)
+
+        shot = character.action_channels.upper_body_action
+        reaction = character.action_channels.additive_reaction
+        assert shot.active and shot.state == "shoot"
+        assert reaction.active and reaction.state == "hit_reaction"
+        assert character.action_channels.locomotion.active
+        assert shot.end_tick is not None and reaction.end_tick is not None
+        assert shot.end_tick < reaction.end_tick
+
+        while world.tick_id < shot.end_tick:
+            world.tick(world.settings.fixed_dt)
+        assert not shot.active
+        assert reaction.active
+
+        while world.tick_id < reaction.end_tick:
+            world.tick(world.settings.fixed_dt)
+        assert not reaction.active
+        assert character.action_channels.locomotion.active
+    finally:
+        world.close()
+
+
+def test_shoot_hit_and_death_keep_separate_action_channels() -> None:
+    world = make_world(max_health=5.0)
+    try:
+        character = world.add_player("p", "Pilot")
+        settle(world)
+        world.attack_requests.append(character.entity_id)
+        world.damage_requests.append(
+            DamageRequest(
+                source_entity_id=None,
+                target_entity_id=character.entity_id,
+                damage_type=DamageType.ENVIRONMENT,
+                amount=5.0,
+                hit_direction=(0.0, 0.0, -1.0),
+            )
+        )
+        world.tick(world.settings.fixed_dt)
+
+        assert character.life_state is LifeState.DEAD
+        assert character.action_channels.upper_body_action.state == "shoot"
+        assert character.action_channels.upper_body_action.active
+        assert character.action_channels.additive_reaction.state == "hit_reaction"
+        assert character.action_channels.additive_reaction.active
+        assert character.action_channels.life_override.state == "death"
+        assert character.action_channels.life_override.active
+        assert character.action_channels.locomotion.state.startswith("disabled:")
+    finally:
+        world.close()
+
+
+def test_grounded_gait_phase_tracks_traveled_distance() -> None:
+    world = make_world()
+    try:
+        character = world.add_player("p", "Pilot")
+        settle(world)
+        phase = character.movement.gait_phase
+        stride_lengths = {Gait.WALK: 1.35, Gait.RUN: 2.25, Gait.SPRINT: 3.1}
+        for sequence in range(1, 16):
+            world.queue_input(
+                character.entity_id,
+                InputCommand(
+                    sequence,
+                    sequence,
+                    0.0,
+                    1.0,
+                    False,
+                    RequestedGait.RUN,
+                    0.0,
+                    0.0,
+                    "orient_to_movement",
+                ),
+            )
+            world.tick(world.settings.fixed_dt)
+            if character.movement.grounded and character.movement.ground_contact_confirmed:
+                stride_length = stride_lengths.get(character.movement.actual_gait)
+                expected = (
+                    phase
+                    if stride_length is None
+                    else (
+                        phase + character.movement.horizontal_speed * world.settings.fixed_dt
+                        / stride_length
+                    ) % 1.0
+                )
+                assert character.movement.gait_phase == pytest.approx(expected)
+            phase = character.movement.gait_phase
+        assert character.movement.gait_phase > 0.0
+        assert character.movement.gait_phase < 1.0
     finally:
         world.close()
 

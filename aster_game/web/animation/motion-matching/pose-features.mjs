@@ -25,6 +25,7 @@ export function flattenPoseFeatureVector(features) {
   const parts = [
     featureVector(features.rootVelocity, 3, "root velocity"),
     featureVector(features.facing, 2, "facing"),
+    featureVector(features.contacts, 2, "foot contacts"),
     featureVector(features.pelvisPosition, 3, "pelvis position"),
     featureVector(features.leftFootPosition, 3, "left foot position"),
     featureVector(features.rightFootPosition, 3, "right foot position"),
@@ -58,10 +59,12 @@ export function extractPoseFeatures({
   rootVelocity,
   trajectory = [],
   previousSample = null,
+  contacts = { left: false, right: false },
   dt = 1 / 60,
   bones = { root: "root", pelvis: "pelvis", leftFoot: "left_foot", rightFoot: "right_foot" },
 }) {
-  if (!(pose instanceof Pose) || !(dt > 0) || !Number.isFinite(dt) || !Array.isArray(trajectory)) {
+  if (!(pose instanceof Pose) || !(dt > 0) || !Number.isFinite(dt) || !Array.isArray(trajectory) ||
+      !contacts || typeof contacts !== "object") {
     throw new TypeError("pose feature extraction requires a pose, trajectory, and positive timestep");
   }
   const rootVelocityVector = featureVector(rootVelocity, 3, "root velocity");
@@ -99,9 +102,18 @@ export function extractPoseFeatures({
     };
   });
   const facing = directionFromQuaternion(world[indices.root].rotation);
+  const contactWeight = (value, name) => {
+    if (typeof value === "boolean") return Number(value);
+    if (Number.isFinite(value) && value >= 0 && value <= 1) return value;
+    throw new TypeError(`${name} contact must be boolean or a weight in [0, 1]`);
+  };
   const features = {
     rootVelocity: rootVelocityVector,
     facing,
+    contacts: [
+      contactWeight(contacts.left, "left foot"),
+      contactWeight(contacts.right, "right foot"),
+    ],
     pelvisPosition,
     pelvisVelocity,
     leftFootPosition,

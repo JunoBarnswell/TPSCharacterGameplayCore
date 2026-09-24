@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from math import acos, ceil, cos, degrees, hypot, radians
+from math import ceil, cos, hypot, radians
 from time import perf_counter
 from typing import TYPE_CHECKING
 
@@ -139,50 +139,6 @@ class MovementSystem:
                 reference_speed=settings.sprint_speed,
             )
             movement.solver_horizontal_velocity = horizontal
-            desired_horizontal_speed = hypot(desired[0], desired[2])
-            if (
-                movement.grounded
-                and movement.ground_contact_confirmed
-                and movement.walkable_floor
-                and movement.ground_contact_point is not None
-                and desired_horizontal_speed > 0.5
-                and movement.blocked_move_ticks >= 1
-            ):
-                step_origin = character.transform.position
-                proposed_position = (
-                    step_origin[0] + horizontal[0] * dt,
-                    step_origin[1],
-                    step_origin[2] + horizontal[1] * dt,
-                )
-                step = world.physics.find_step_up_target(
-                    step_origin,
-                    proposed_position,
-                    movement.ground_contact_point[1],
-                )
-                if step is not None:
-                    step_position, support = step
-                    character.physics.node_path.setPos(*step_position)
-                    character.transform.position = step_position
-                    movement.previous_position = step_position
-                    movement.floor_normal = support.normal
-                    movement.floor_distance = settings.ground_probe_radius
-                    movement.ground_contact_point = support.position
-                    movement.ground_entity = support.node_name
-                    movement.slope_angle = degrees(
-                        acos(max(-1.0, min(1.0, support.normal[1])))
-                    )
-                    movement.walkable_floor = True
-                    movement.ground_sample_count = max(movement.ground_sample_count, 1)
-                    movement.grounded = True
-                    movement.ground_contact_confirmed = True
-                    movement.movement_mode = MovementMode.GROUNDED
-                    movement.blocked_move_ticks = 0
-                    world.publish(
-                        "step_up",
-                        entity_id=character.entity_id,
-                        ground_entity=support.node_name,
-                        position=step_position,
-                    )
             movement.acceleration = (acceleration[0], movement.acceleration[1], acceleration[1])
             character.physics.controller.setGravity(
                 0.0 if movement.grounded and movement.walkable_floor else settings.gravity

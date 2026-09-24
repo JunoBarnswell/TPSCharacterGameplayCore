@@ -43,13 +43,6 @@ class LocomotionPhase(StrEnum):
     HEAVY_LAND = "heavy_land"
 
 
-class ActionLayer(StrEnum):
-    NONE = "none"
-    HIT_REACTION = "hit_reaction"
-    ATTACK = "attack"
-    DEATH = "death"
-
-
 class LifeState(StrEnum):
     ALIVE = "alive"
     DEAD = "dead"
@@ -78,6 +71,7 @@ class CharacterMovementState:
     ground_entity: str | None = None
     movement_mode: MovementMode = MovementMode.AIRBORNE
     actual_gait: Gait = Gait.IDLE
+    gait_phase: float = 0.0
     requested_gait: RequestedGait = RequestedGait.RUN
     character_yaw: float = 0.0
     desired_facing_yaw: float = 0.0

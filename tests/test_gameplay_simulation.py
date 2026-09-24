@@ -119,6 +119,7 @@ def test_step_solver_moves_character_onto_walkable_step() -> None:
         character.movement.previous_position = start
         settle(world)
 
+        max_tick_displacement = 0.0
         for sequence in range(1, 121):
             assert world.queue_input(
                 character.entity_id,
@@ -134,12 +135,23 @@ def test_step_solver_moves_character_onto_walkable_step() -> None:
                     "orient_to_movement",
                 ),
             )
+            previous_position = character.transform.position
             world.tick(world.settings.fixed_dt)
+            horizontal_displacement = sum(
+                (character.transform.position[axis] - previous_position[axis]) ** 2
+                for axis in (0, 2)
+            ) ** 0.5
+            max_tick_displacement = max(max_tick_displacement, horizontal_displacement)
+            assert (
+                horizontal_displacement
+                <= world.settings.run_speed * world.settings.fixed_dt + 0.03
+            )
             if character.movement.ground_entity == "upper-platform-step-1":
                 break
 
-        assert character.transform.position[2] > 4.6
-        assert character.transform.position[1] >= 1.15
+        assert 4.3 < character.transform.position[2] <= 4.6
+        assert character.transform.position[1] >= 1.1
+        assert max_tick_displacement <= world.settings.run_speed * world.settings.fixed_dt + 0.03
         assert character.movement.grounded
         assert character.movement.ground_contact_confirmed
         assert character.movement.ground_entity == "upper-platform-step-1"
@@ -204,8 +216,11 @@ def test_walkable_slope_stays_grounded_and_moves_along_plane() -> None:
             )
             world.tick(world.settings.fixed_dt)
 
-        assert character.transform.position[2] > start_z + 0.5
-        assert character.transform.position[1] > start_y + 0.2
+        horizontal_progress = character.transform.position[2] - start_z
+        vertical_progress = character.transform.position[1] - start_y
+        assert horizontal_progress > 0.45
+        assert vertical_progress > 0.12
+        assert 0.32 <= vertical_progress / horizontal_progress <= 0.41
         assert character.movement.grounded
         assert character.movement.ground_entity == "walkable-ramp"
     finally:
@@ -227,6 +242,58 @@ def test_slope_above_configured_limit_is_not_walkable() -> None:
         assert character.movement.slope_angle > world.settings.max_walkable_slope
         assert not character.movement.walkable_floor
         assert not character.movement.ground_contact_confirmed
+    finally:
+        world.close()
+
+
+def test_ground_grace_snapshot_keeps_contact_unconfirmed_and_rejects_jump() -> None:
+    world = make_world()
+    try:
+        character = world.add_player("grace-player", "Grace Player")
+        settle(world)
+        unsupported_position = (
+            character.transform.position[0],
+            4.0,
+            character.transform.position[2],
+        )
+        character.physics.node_path.setPos(*unsupported_position)
+        character.transform.position = unsupported_position
+        character.movement.previous_position = unsupported_position
+        character.movement.grounded = True
+        character.movement.ground_contact_confirmed = True
+        character.movement.walkable_floor = True
+        character.movement.floor_distance = 0.0
+        character.movement.last_grounded_tick = world.tick_id
+
+        world.tick(world.settings.fixed_dt)
+        snapshot = world.snapshot()["players"][0]
+        assert snapshot["grounded"]
+        assert not snapshot["ground_contact_confirmed"]
+        assert snapshot["last_grounded_tick"] == world.tick_id - 1
+
+        assert world.queue_input(
+            character.entity_id,
+            InputCommand(
+                1,
+                1,
+                0.0,
+                0.0,
+                True,
+                RequestedGait.RUN,
+                0.0,
+                0.0,
+                "orient_to_movement",
+            ),
+        )
+        events = world.tick(world.settings.fixed_dt)
+        assert not any(event.type == "jump_started" for event in events)
+        assert any(
+            event.type == "command_rejected" and event.data["reason"] == "JUMP_INVALID"
+            for event in events
+        )
+        assert character.movement.grounded
+        assert not character.movement.ground_contact_confirmed
+        assert character.transform.position[1] < unsupported_position[1] + 0.1
     finally:
         world.close()
 
@@ -378,5 +445,61 @@ def test_projectile_direction_uses_server_validated_view_ray_not_character_facin
             for actual, expected in zip(direction, fired.data["aim_direction"], strict=True)
         )
         assert not isclose(direction[0], 1.0, abs_tol=0.1)
+    finally:
+        world.close()
+
+
+def test_projectile_180_degree_turn_uses_view_yaw_and_ignores_its_owner() -> None:
+    world = make_world(projectile_damage=100.0)
+    try:
+        attacker = world.add_player("turn-attacker", "Turn Attacker")
+        target = world.add_player("turn-target", "Turn Target")
+        settle(world)
+
+        attacker_position = (-8.0, attacker.transform.position[1], -4.0)
+        target_position = (-8.0, target.transform.position[1], -10.0)
+        attacker.physics.node_path.setPos(*attacker_position)
+        attacker.transform.position = attacker_position
+        attacker.movement.previous_position = attacker_position
+        attacker.movement.character_yaw = 0.0
+        attacker.transform.yaw = 0.0
+        target.physics.node_path.setPos(*target_position)
+        target.transform.position = target_position
+        target.movement.previous_position = target_position
+
+        assert world.queue_input(
+            attacker.entity_id,
+            InputCommand(
+                1,
+                1,
+                0.0,
+                0.0,
+                False,
+                RequestedGait.RUN,
+                180.0,
+                0.0,
+                "aim",
+            ),
+        )
+        assert world.queue_attack(attacker.entity_id)
+        first_tick_events = world.tick(world.settings.fixed_dt)
+
+        projectile = next(iter(world.projectiles.values()))
+        assert projectile.position[2] < attacker_position[2]
+        assert not any(event.type == "projectile_impact" for event in first_tick_events)
+
+        events = list(first_tick_events)
+        for _ in range(30):
+            events.extend(world.tick(world.settings.fixed_dt))
+            if target.health.current_health < target.health.max_health:
+                break
+
+        assert target.health.current_health < target.health.max_health
+        assert any(event.type == "hit" for event in events)
+        assert any(event.type == "damage" for event in events)
+        assert not any(
+            event.type == "hit" and event.data["target_entity_id"] == attacker.entity_id
+            for event in events
+        )
     finally:
         world.close()

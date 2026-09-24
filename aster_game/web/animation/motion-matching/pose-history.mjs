@@ -4,7 +4,7 @@ import { extractPoseFeatures } from "./pose-features.mjs";
 const defaultBones = Object.freeze(["root", "pelvis", "left_foot", "right_foot"]);
 const featureBones = Object.freeze(["root", "pelvis", "left_foot", "right_foot"]);
 const featureVectorNames = Object.freeze([
-  "rootVelocity", "facing", "pelvisPosition", "pelvisVelocity",
+  "rootVelocity", "facing", "contacts", "pelvisPosition", "pelvisVelocity",
   "leftFootPosition", "rightFootPosition", "leftFootVelocity", "rightFootVelocity",
 ]);
 
@@ -37,11 +37,12 @@ export class PoseHistory {
     tick,
     rootVelocity,
     trajectory = [],
+    contacts = { left: false, right: false },
     clipName = "unassigned",
     timeSeconds = 0,
     dt = 1 / 60,
   }) {
-    if (!(pose instanceof Pose) || !Number.isInteger(tick) ||
+    if (!(pose instanceof Pose) || !Number.isInteger(tick) || tick < 0 ||
         !Number.isFinite(timeSeconds) || timeSeconds < 0 ||
         typeof clipName !== "string" || clipName.length === 0 ||
         !(dt > 0) || !Number.isFinite(dt)) {
@@ -68,6 +69,7 @@ export class PoseHistory {
       rootVelocity,
       trajectory,
       previousSample,
+      contacts,
       dt,
       bones: {
         root: "root",
@@ -77,7 +79,7 @@ export class PoseHistory {
       },
     });
     const sample = Object.freeze({
-      id: `${clipName}@${timeSeconds.toFixed(6)}`,
+      id: `${clipName}@${tick}:${timeSeconds.toFixed(6)}`,
       tick,
       pose,
       clipName,

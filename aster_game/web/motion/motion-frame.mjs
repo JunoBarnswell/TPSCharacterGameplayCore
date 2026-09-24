@@ -12,6 +12,32 @@ export function createMotionFrame(state, tick, renderDelta = 0) {
     : 0;
   const turnAngle = Math.max(1, Number(state.turn_angle ?? Math.abs(turnRemaining)));
   const phaseDuration = Number(state.phase_duration_ticks ?? 0);
+  const channelNames = [
+    "locomotion",
+    "upper_body_action",
+    "additive_reaction",
+    "full_body_override",
+    "life_override",
+  ];
+  const actionChannels = Object.fromEntries(channelNames.map((name) => [
+    name,
+    {
+      state: "none",
+      active: false,
+      start_tick: 0,
+      end_tick: null,
+      sequence: 0,
+      event_id: "",
+      blend_semantic: "none",
+      ...(state.action_channels?.[name] ?? {}),
+    },
+  ]));
+  const actionLayers = channelNames
+    .filter((name) => name !== "locomotion" && actionChannels[name].active)
+    .map((name) => ({
+      channel: name,
+      ...actionChannels[name],
+    }));
   const derivedPhaseProgress = phaseDuration > 0
     ? Math.max(0, Math.min(1, (tick - Number(state.phase_start_tick ?? tick)) / phaseDuration))
     : 0;
@@ -39,6 +65,7 @@ export function createMotionFrame(state, tick, renderDelta = 0) {
     movementMode: state.movement_mode ?? "airborne",
     requestedGait: state.requested_gait ?? "run",
     actualGait: state.actual_gait ?? "idle",
+    gaitPhase: ((Number(state.rendered_gait_phase ?? state.gait_phase ?? 0) % 1) + 1) % 1,
     locomotionPhase: state.locomotion_phase ?? "idle",
     phaseProgress: Math.max(0, Math.min(1, Number(state.phase_progress ?? derivedPhaseProgress))),
     turnDirection: state.turn_direction ?? (turnRemaining > 0 ? "right" : turnRemaining < 0 ? "left" : "none"),
@@ -51,10 +78,8 @@ export function createMotionFrame(state, tick, renderDelta = 0) {
     rotationMode: state.rotation_mode ?? "orient_to_movement",
     aimYaw: Number(state.aim_yaw ?? 0),
     aimPitch: Number(state.aim_pitch ?? 0),
-    actionLayer: state.action_layer ?? "none",
-    actionLayers: [...(state.action_layers ?? (state.action_layer && state.action_layer !== "none"
-      ? [state.action_layer]
-      : []))],
+    actionChannels,
+    actionLayers,
     hitDirection: state.hit_direction ? [...state.hit_direction] : null,
     hitStrength: Number(state.hit_strength ?? 0),
     footIK: {
