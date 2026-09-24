@@ -2,7 +2,7 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
-from aster_game.game.movement.state import RotationMode
+from aster_game.game.movement.state import RequestedGait, RotationMode
 
 
 class WireModel(BaseModel):
@@ -35,7 +35,7 @@ class InputMessage(WireModel):
     move_x: float = Field(default=0.0, ge=-1.0, le=1.0, allow_inf_nan=False)
     move_z: float = Field(default=0.0, ge=-1.0, le=1.0, allow_inf_nan=False)
     jump: bool = False
-    sprint: bool = False
+    requested_gait: RequestedGait = RequestedGait.RUN
     view_yaw: float = Field(default=0.0, ge=-180.0, le=180.0, allow_inf_nan=False)
     view_pitch: float = Field(default=0.0, ge=-89.0, le=89.0, allow_inf_nan=False)
     rotation_mode: RotationMode = RotationMode.ORIENT_TO_MOVEMENT
@@ -69,11 +69,19 @@ class MovementTuning(WireModel):
     ground_acceleration: float = Field(gt=0.0)
     braking_deceleration: float = Field(ge=0.0)
     ground_friction: float = Field(ge=0.0)
+    ground_directional_friction: float = Field(ge=0.0)
+    turning_deceleration: float = Field(ge=0.0)
+    pivot_braking_multiplier: float = Field(ge=1.0)
     air_acceleration: float = Field(ge=0.0)
     air_max_speed: float = Field(gt=0.0)
     max_rotation_speed: float = Field(gt=0.0)
     rotation_acceleration: float = Field(gt=0.0)
     rotation_deceleration: float = Field(gt=0.0)
+    walk_acceleration_curve: tuple[tuple[float, float], ...]
+    run_acceleration_curve: tuple[tuple[float, float], ...]
+    sprint_acceleration_curve: tuple[tuple[float, float], ...]
+    braking_curve: tuple[tuple[float, float], ...]
+    turn_speed_curve: tuple[tuple[float, float], ...]
     turn_in_place_threshold: float = Field(gt=0.0, le=180.0)
     pivot_angle_threshold: float = Field(ge=90.0, le=180.0)
     jump_speed: float = Field(gt=0.0)
@@ -84,15 +92,52 @@ class MovementTuning(WireModel):
     landing_soft_velocity: float = Field(ge=0.0)
     landing_heavy_velocity: float = Field(gt=0.0)
     landing_recovery_seconds: float = Field(ge=0.0)
+    max_walkable_slope: float = Field(gt=0.0, le=89.0)
+    ground_probe_radius: float = Field(gt=0.0)
+    ground_probe_depth: float = Field(gt=0.0)
+    ground_probe_start_offset: float = Field(ge=0.0)
+    ground_snap_distance: float = Field(ge=0.0)
+    ground_grace_distance: float = Field(ge=0.0)
+    ground_grace_ticks: int = Field(ge=0)
+    character_step_height: float = Field(ge=0.0)
+    character_radius: float = Field(gt=0.0)
+    character_cylinder_height: float = Field(gt=0.0)
+
+
+class CollisionPlane(WireModel):
+    name: str
+    normal: tuple[float, float, float]
+    constant: float
+
+
+class CollisionBox(WireModel):
+    name: str
+    center: tuple[float, float, float]
+    half_extents: tuple[float, float, float]
+
+
+class CollisionRamp(WireModel):
+    name: str
+    center: tuple[float, float, float]
+    half_extents: tuple[float, float, float]
+    pitch_degrees: float
+
+
+class CollisionWorldProfile(WireModel):
+    version: Literal[1]
+    planes: list[CollisionPlane]
+    boxes: list[CollisionBox]
+    ramps: list[CollisionRamp]
 
 
 class WelcomeMessage(WireModel):
     type: Literal["welcome"] = "welcome"
     session_id: str
-    protocol_version: int = 2
+    protocol_version: int = 6
     tick_rate: int
     snapshot_interval_ticks: int
     movement_tuning: MovementTuning
+    collision_world: CollisionWorldProfile
 
 
 class JoinedMessage(WireModel):
@@ -114,7 +159,7 @@ class PongMessage(WireModel):
     nonce: int | str | None = None
 
 
-class PlayerSnapshot(WireModel):
+class RemotePlayerSnapshot(WireModel):
     entity_id: int
     player_id: str
     player_name: str
@@ -123,18 +168,14 @@ class PlayerSnapshot(WireModel):
     acceleration: tuple[float, float, float]
     desired_velocity: tuple[float, float, float]
     desired_move_direction: tuple[float, float, float]
-    current_speed: float
     horizontal_speed: float
     vertical_speed: float
     grounded: bool
     floor_normal: tuple[float, float, float]
     floor_distance: float | None
     walkable_floor: bool
-    slope_angle: float
-    ground_contact_point: tuple[float, float, float] | None
-    ground_entity: str | None
     movement_mode: str
-    gait: str
+    actual_gait: str
     character_yaw: float
     desired_facing_yaw: float
     angular_velocity: float
@@ -145,19 +186,38 @@ class PlayerSnapshot(WireModel):
     aim_pitch: float
     rotation_mode: str
     locomotion_phase: str
-    phase_until_tick: int
-    landing_recovery_until_tick: int
+    phase_progress: float = Field(ge=0.0, le=1.0)
     turn_angle: float
+    turn_direction: Literal["none", "left", "right"]
+    remaining_turn_angle: float
+    turn_progress: float = Field(ge=0.0, le=1.0)
     landing_impact_velocity: float
-    jump_held: bool
     action_layer: str
     life_state: str
     hit_direction: tuple[float, float, float] | None
     hit_region: str | None
     hit_strength: float
-    hit_source_position: tuple[float, float, float] | None
     health: float
     max_health: float
+
+
+class OwnerPlayerSnapshot(RemotePlayerSnapshot):
+    """Owner-only fields used for prediction, acknowledgements, and movement debugging."""
+
+    current_speed: float
+    ground_contact_confirmed: bool
+    ground_sample_count: int
+    blocked_move_ticks: int = Field(ge=0)
+    slope_angle: float
+    ground_contact_point: tuple[float, float, float] | None
+    ground_entity: str | None
+    requested_gait: str
+    phase_start_tick: int
+    phase_duration_ticks: int = Field(ge=0)
+    phase_until_tick: int
+    landing_recovery_until_tick: int
+    jump_held: bool
+    hit_source_position: tuple[float, float, float] | None
     last_processed_input: int
     last_client_tick: int
     jump_available_tick: int
@@ -172,5 +232,6 @@ class ProjectileSnapshot(WireModel):
 class SnapshotMessage(WireModel):
     type: Literal["snapshot"] = "snapshot"
     tick: int
-    players: list[PlayerSnapshot]
+    owner: OwnerPlayerSnapshot
+    players: list[RemotePlayerSnapshot]
     projectiles: list[ProjectileSnapshot]

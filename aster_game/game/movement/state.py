@@ -15,6 +15,12 @@ class Gait(StrEnum):
     SPRINT = "sprint"
 
 
+class RequestedGait(StrEnum):
+    WALK = "walk"
+    RUN = "run"
+    SPRINT = "sprint"
+
+
 class RotationMode(StrEnum):
     ORIENT_TO_MOVEMENT = "orient_to_movement"
     STRAFE = "strafe"
@@ -62,11 +68,17 @@ class CharacterMovementState:
     floor_normal: tuple[float, float, float] = (0.0, 1.0, 0.0)
     floor_distance: float = 0.0
     walkable_floor: bool = True
+    ground_contact_confirmed: bool = False
+    ground_sample_count: int = 0
+    last_grounded_tick: int = -1
+    blocked_move_ticks: int = 0
+    solver_horizontal_velocity: tuple[float, float] = (0.0, 0.0)
     slope_angle: float = 0.0
     ground_contact_point: tuple[float, float, float] | None = None
     ground_entity: str | None = None
     movement_mode: MovementMode = MovementMode.AIRBORNE
-    gait: Gait = Gait.IDLE
+    actual_gait: Gait = Gait.IDLE
+    requested_gait: RequestedGait = RequestedGait.RUN
     character_yaw: float = 0.0
     desired_facing_yaw: float = 0.0
     angular_velocity: float = 0.0
@@ -77,9 +89,9 @@ class CharacterMovementState:
     aim_pitch: float = 0.0
     rotation_mode: RotationMode = RotationMode.ORIENT_TO_MOVEMENT
     locomotion_phase: LocomotionPhase = LocomotionPhase.IDLE
+    turn_direction: str = "none"
     move_x: float = 0.0
     move_z: float = 0.0
-    sprint: bool = False
     jump_held: bool = False
     jump_requested: bool = False
     last_input_tick: int = 0
@@ -89,6 +101,8 @@ class CharacterMovementState:
     previous_position: tuple[float, float, float] = (0.0, 0.0, 0.0)
     previous_horizontal_velocity: tuple[float, float] = (0.0, 0.0)
     previous_desired_velocity: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    phase_start_tick: int = 0
+    phase_duration_ticks: int = 0
     phase_until_tick: int = 0
     landing_recovery_until_tick: int = 0
     turn_angle: float = 0.0

@@ -1,0 +1,100 @@
+{
+  "dt": 0.016666666666666666,
+  "tuning": {
+    "walk_speed": 2.0,
+    "run_speed": 4.5,
+    "sprint_speed": 6.5,
+    "ground_acceleration": 24.0,
+    "braking_deceleration": 16.0,
+    "ground_friction": 8.0,
+    "ground_directional_friction": 9.0,
+    "turning_deceleration": 7.0,
+    "pivot_braking_multiplier": 1.75,
+    "pivot_angle_threshold": 135.0,
+    "air_acceleration": 10.0,
+    "air_control": 0.45,
+    "air_max_speed": 6.5,
+    "walk_acceleration_curve": [[0.0, 1.25], [0.5, 1.0], [1.0, 0.6]],
+    "run_acceleration_curve": [[0.0, 1.35], [0.5, 1.0], [1.0, 0.65]],
+    "sprint_acceleration_curve": [[0.0, 1.5], [0.5, 1.0], [1.0, 0.7]],
+    "braking_curve": [[0.0, 0.6], [0.35, 1.0], [1.0, 1.35]],
+    "turn_speed_curve": [[0.0, 0.22], [0.25, 0.55], [1.0, 1.0]],
+    "max_rotation_speed": 540.0,
+    "rotation_acceleration": 1440.0,
+    "rotation_deceleration": 1800.0
+  },
+  "cases": [
+    {
+      "name": "sprint_acceleration",
+      "current": [0.0, 0.0],
+      "desired": [0.0, 6.5],
+      "grounded": true,
+      "requested_gait": "sprint",
+      "expected": {
+        "velocity": [0.0, 0.6],
+        "acceleration": [0.0, 36.0],
+        "actual_gait": "walk",
+        "movement_mode": "grounded"
+      }
+    },
+    {
+      "name": "quarter_turn",
+      "current": [0.0, 6.0],
+      "desired": [6.0, 0.0],
+      "grounded": true,
+      "requested_gait": "run",
+      "expected": {
+        "velocity": [0.2090203567825003, 5.589903961161336],
+        "acceleration": [12.541221406950019, -24.605762330319845],
+        "actual_gait": "sprint",
+        "movement_mode": "grounded"
+      }
+    },
+    {
+      "name": "pivot_reverse",
+      "current": [0.0, 6.0],
+      "desired": [0.0, -4.5],
+      "grounded": true,
+      "requested_gait": "run",
+      "expected": {
+        "velocity": [0.0, 5.5055],
+        "acceleration": [0.0, -29.670000000000023],
+        "actual_gait": "sprint",
+        "movement_mode": "grounded"
+      }
+    },
+    {
+      "name": "braking",
+      "current": [2.0, 3.0],
+      "desired": [0.0, 0.0],
+      "grounded": true,
+      "requested_gait": "run",
+      "expected": {
+        "velocity": [1.5691090620713368, 2.3536635931070053],
+        "acceleration": [-25.85345627571979, -38.78018441357968],
+        "actual_gait": "walk",
+        "movement_mode": "grounded"
+      }
+    },
+    {
+      "name": "air_steer",
+      "current": [4.0, 0.0],
+      "desired": [0.0, 5.0],
+      "grounded": false,
+      "requested_gait": "run",
+      "expected": {
+        "velocity": [3.9531478714334183, 0.058565160708227273],
+        "acceleration": [-2.811127713994903, 3.5139096424936365],
+        "actual_gait": "run",
+        "movement_mode": "airborne"
+      }
+    }
+  ],
+  "rotation": {
+    "current_yaw": 179.0,
+    "angular_velocity": 0.0,
+    "desired_yaw": -179.0,
+    "expected_yaw": 179.39999999999998,
+    "expected_angular_velocity": 24.0
+  }
+}

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from math import isclose
+
 from aster_game.app.config import Settings
 from aster_game.game.components import InputCommand
 from aster_game.game.events import DamageRequest, DamageType
-from aster_game.game.movement.state import LifeState
+from aster_game.game.movement.state import LifeState, RequestedGait
 from aster_game.game.world import GameWorld
 from aster_game.infrastructure.metrics import RuntimeMetrics
 
@@ -29,14 +31,24 @@ def test_input_sequence_is_authoritative_and_movement_is_speed_limited() -> None
             assert world.queue_input(
                 character.entity_id,
                 InputCommand(
-                    sequence, sequence, 0.0, 1.0, False, True, 0.0, 0.0, "orient_to_movement"
+                    sequence,
+                    sequence,
+                    0.0,
+                    1.0,
+                    False,
+                    RequestedGait.SPRINT,
+                    0.0,
+                    0.0,
+                    "orient_to_movement",
                 ),
             )
             world.tick(world.settings.fixed_dt)
 
         assert not world.queue_input(
             character.entity_id,
-            InputCommand(10, 10, 0.0, 1.0, False, True, 0.0, 0.0, "orient_to_movement"),
+            InputCommand(
+                10, 10, 0.0, 1.0, False, RequestedGait.SPRINT, 0.0, 0.0, "orient_to_movement"
+            ),
         )
         displacement = character.transform.position[2] - start[2]
         assert displacement > 0.0
@@ -53,6 +65,8 @@ def test_jump_enters_air_and_returns_to_ground() -> None:
         settle(world)
         ground_y = character.transform.position[1]
         assert character.movement.grounded
+        assert character.movement.ground_contact_confirmed
+        assert character.movement.ground_sample_count == 5
         assert character.movement.walkable_floor
         assert character.movement.ground_contact_point is not None
         assert character.movement.ground_entity == "arena-floor"
@@ -60,7 +74,9 @@ def test_jump_enters_air_and_returns_to_ground() -> None:
 
         assert world.queue_input(
             character.entity_id,
-            InputCommand(1, 1, 0.0, 0.0, True, False, 0.0, 0.0, "orient_to_movement"),
+            InputCommand(
+                1, 1, 0.0, 0.0, True, RequestedGait.RUN, 0.0, 0.0, "orient_to_movement"
+            ),
         )
         events = []
         highest_y = ground_y
@@ -74,6 +90,143 @@ def test_jump_enters_air_and_returns_to_ground() -> None:
         assert any(event.type == "fall_started" for event in events)
         assert any(event.type == "landing_started" for event in events)
         assert any(event.type == "landed" for event in events)
+    finally:
+        world.close()
+
+
+def test_ground_probe_uses_configured_slope_and_five_sphere_sweeps() -> None:
+    world = make_world(max_walkable_slope=37.0)
+    try:
+        character = world.add_player("player", "Player")
+        settle(world)
+
+        assert character.physics.controller.getMaxSlope() == 37.0
+        assert character.movement.ground_contact_confirmed
+        assert character.movement.grounded
+        assert character.movement.ground_sample_count == 5
+        assert character.movement.ground_entity == "arena-floor"
+    finally:
+        world.close()
+
+
+def test_step_solver_moves_character_onto_walkable_step() -> None:
+    world = make_world()
+    try:
+        character = world.add_player("player", "Player")
+        start = (0.0, world.settings.spawn_height, 4.0)
+        character.physics.node_path.setPos(*start)
+        character.transform.position = start
+        character.movement.previous_position = start
+        settle(world)
+
+        for sequence in range(1, 121):
+            assert world.queue_input(
+                character.entity_id,
+                InputCommand(
+                    sequence,
+                    sequence,
+                    0.0,
+                    1.0,
+                    False,
+                    RequestedGait.RUN,
+                    0.0,
+                    0.0,
+                    "orient_to_movement",
+                ),
+            )
+            world.tick(world.settings.fixed_dt)
+            if character.movement.ground_entity == "upper-platform-step-1":
+                break
+
+        assert character.transform.position[2] > 4.6
+        assert character.transform.position[1] >= 1.15
+        assert character.movement.grounded
+        assert character.movement.ground_contact_confirmed
+        assert character.movement.ground_entity == "upper-platform-step-1"
+        step_y = character.transform.position[1]
+
+        last_sequence = sequence
+        for step_down_sequence in range(last_sequence + 1, last_sequence + 41):
+            assert world.queue_input(
+                character.entity_id,
+                InputCommand(
+                    step_down_sequence,
+                    step_down_sequence,
+                    0.0,
+                    -1.0,
+                    False,
+                    RequestedGait.WALK,
+                    0.0,
+                    0.0,
+                    "orient_to_movement",
+                ),
+            )
+            world.tick(world.settings.fixed_dt)
+            if character.movement.ground_entity == "arena-floor":
+                break
+
+        assert character.movement.grounded
+        assert character.movement.ground_entity == "arena-floor"
+        assert character.transform.position[1] < step_y - 0.2
+    finally:
+        world.close()
+
+
+def test_walkable_slope_stays_grounded_and_moves_along_plane() -> None:
+    world = make_world()
+    try:
+        character = world.add_player("player", "Player")
+        start = (8.0, 2.0, -4.0)
+        character.physics.node_path.setPos(*start)
+        character.transform.position = start
+        character.movement.previous_position = start
+        settle(world)
+
+        assert character.movement.grounded
+        assert character.movement.ground_entity == "walkable-ramp"
+        assert 19.0 <= character.movement.slope_angle <= 21.0
+        start_y, start_z = character.transform.position[1], character.transform.position[2]
+
+        for sequence in range(1, 31):
+            assert world.queue_input(
+                character.entity_id,
+                InputCommand(
+                    sequence,
+                    sequence,
+                    0.0,
+                    1.0,
+                    False,
+                    RequestedGait.WALK,
+                    0.0,
+                    0.0,
+                    "orient_to_movement",
+                ),
+            )
+            world.tick(world.settings.fixed_dt)
+
+        assert character.transform.position[2] > start_z + 0.5
+        assert character.transform.position[1] > start_y + 0.2
+        assert character.movement.grounded
+        assert character.movement.ground_entity == "walkable-ramp"
+    finally:
+        world.close()
+
+
+def test_slope_above_configured_limit_is_not_walkable() -> None:
+    world = make_world(max_walkable_slope=10.0)
+    try:
+        character = world.add_player("player", "Player")
+        start = (8.0, 2.0, -4.0)
+        character.physics.node_path.setPos(*start)
+        character.transform.position = start
+        character.movement.previous_position = start
+
+        world.tick(world.settings.fixed_dt)
+
+        assert character.movement.ground_entity == "walkable-ramp"
+        assert character.movement.slope_angle > world.settings.max_walkable_slope
+        assert not character.movement.walkable_floor
+        assert not character.movement.ground_contact_confirmed
     finally:
         world.close()
 
@@ -163,7 +316,9 @@ def test_projectile_hit_death_and_respawn_restore_character_state() -> None:
         assert any(event.type == "death" for event in events)
         assert not world.queue_input(
             target.entity_id,
-            InputCommand(1, 1, 0.0, 1.0, False, True, 0.0, 0.0, "orient_to_movement"),
+            InputCommand(
+                1, 1, 0.0, 1.0, False, RequestedGait.SPRINT, 0.0, 0.0, "orient_to_movement"
+            ),
         )
 
         assert world.queue_respawn(target.entity_id)
@@ -173,5 +328,55 @@ def test_projectile_hit_death_and_respawn_restore_character_state() -> None:
         assert target.movement.movement_mode.value != "disabled"
         assert target.movement.last_processed_input == -1
         assert any(event.type == "respawn" for event in respawn_events)
+    finally:
+        world.close()
+
+
+def test_projectile_direction_uses_server_validated_view_ray_not_character_facing() -> None:
+    world = make_world()
+    try:
+        attacker = world.add_player("aim-attacker", "Aim Attacker")
+        target = world.add_player("aim-target", "Aim Target")
+        settle(world)
+
+        attacker_position = (-8.0, attacker.transform.position[1], -4.0)
+        target_position = (-8.0, target.transform.position[1], 4.0)
+        attacker.physics.node_path.setPos(*attacker_position)
+        attacker.transform.position = attacker_position
+        attacker.movement.previous_position = attacker_position
+        attacker.movement.character_yaw = 90.0
+        attacker.transform.yaw = 90.0
+        target.physics.node_path.setPos(*target_position)
+        target.transform.position = target_position
+        target.movement.previous_position = target_position
+
+        assert world.queue_input(
+            attacker.entity_id,
+            InputCommand(
+                1,
+                1,
+                0.0,
+                0.0,
+                False,
+                RequestedGait.RUN,
+                0.0,
+                0.0,
+                "aim",
+            ),
+        )
+        assert world.queue_attack(attacker.entity_id)
+        events = world.tick(world.settings.fixed_dt)
+
+        projectile = next(iter(world.projectiles.values()))
+        velocity_length = sum(value * value for value in projectile.velocity) ** 0.5
+        direction = tuple(value / velocity_length for value in projectile.velocity)
+        assert abs(direction[0]) < 0.2
+        assert direction[2] > 0.98
+        fired = next(event for event in events if event.type == "attack_fired")
+        assert all(
+            isclose(actual, expected, abs_tol=1e-9)
+            for actual, expected in zip(direction, fired.data["aim_direction"], strict=True)
+        )
+        assert not isclose(direction[0], 1.0, abs_tol=0.1)
     finally:
         world.close()

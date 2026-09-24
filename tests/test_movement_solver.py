@@ -1,18 +1,31 @@
 from __future__ import annotations
 
+import json
+from math import cos, radians, sin
+from pathlib import Path
+
+import pytest
+
 from aster_game.app.config import Settings
 from aster_game.game.components import InputCommand
 from aster_game.game.events import DamageRequest, DamageType
 from aster_game.game.movement.solver import (
+    derive_actual_gait,
+    desired_facing_yaw,
+    desired_motion,
     landing_classification,
+    project_velocity_onto_ground_plane,
     solve_horizontal_velocity,
     solve_rotation,
 )
 from aster_game.game.movement.state import (
     ActionLayer,
+    Gait,
     LifeState,
     LocomotionPhase,
     MovementMode,
+    RequestedGait,
+    RotationMode,
 )
 from aster_game.game.movement_system import AirLifecycleSystem
 from aster_game.game.world import GameWorld
@@ -37,16 +50,28 @@ def test_ground_acceleration_and_braking_are_rate_limited() -> None:
             world.queue_input(
                 character.entity_id,
                 InputCommand(
-                    sequence, sequence, 0.0, 1.0, False, True, 0.0, 0.0, "orient_to_movement"
+                    sequence,
+                    sequence,
+                    0.0,
+                    1.0,
+                    False,
+                    RequestedGait.SPRINT,
+                    0.0,
+                    0.0,
+                    "orient_to_movement",
                 ),
             )
             world.tick(world.settings.fixed_dt)
         assert 0.0 < character.movement.horizontal_speed < world.settings.sprint_speed
+        assert character.movement.requested_gait is RequestedGait.SPRINT
+        assert character.movement.actual_gait is not Gait.SPRINT
 
         previous_speed = character.movement.horizontal_speed
         world.queue_input(
             character.entity_id,
-            InputCommand(11, 11, 0.0, 0.0, False, False, 0.0, 0.0, "orient_to_movement"),
+            InputCommand(
+                11, 11, 0.0, 0.0, False, RequestedGait.RUN, 0.0, 0.0, "orient_to_movement"
+            ),
         )
         world.tick(world.settings.fixed_dt)
         assert 0.0 < character.movement.horizontal_speed < previous_speed
@@ -54,13 +79,129 @@ def test_ground_acceleration_and_braking_are_rate_limited() -> None:
             world.queue_input(
                 character.entity_id,
                 InputCommand(
-                    sequence, sequence, 0.0, 0.0, False, False, 0.0, 0.0, "orient_to_movement"
+                    sequence,
+                    sequence,
+                    0.0,
+                    0.0,
+                    False,
+                    RequestedGait.RUN,
+                    0.0,
+                    0.0,
+                    "orient_to_movement",
                 ),
             )
             world.tick(world.settings.fixed_dt)
         assert character.movement.horizontal_speed < 0.1
     finally:
         world.close()
+
+
+def test_requested_gait_is_distinct_from_speed_derived_actual_gait() -> None:
+    world = make_world()
+    try:
+        settings = world.settings
+        desired, _ = desired_motion(
+            0.0,
+            1.0,
+            RequestedGait.SPRINT,
+            0.0,
+            settings.walk_speed,
+            settings.run_speed,
+            settings.sprint_speed,
+        )
+        velocity = (0.0, 0.0)
+        actual_gaits = set()
+        for _ in range(settings.tick_rate * 3):
+            velocity, _ = solve_horizontal_velocity(
+                velocity,
+                (desired[0], desired[2]),
+                settings.fixed_dt,
+                grounded=True,
+                ground_acceleration=settings.ground_acceleration,
+                braking_deceleration=settings.braking_deceleration,
+                ground_friction=settings.ground_friction,
+                air_acceleration=settings.air_acceleration,
+                air_control=settings.air_control,
+                air_max_speed=settings.air_max_speed,
+                ground_directional_friction=settings.ground_directional_friction,
+                turning_deceleration=settings.turning_deceleration,
+                pivot_braking_multiplier=settings.pivot_braking_multiplier,
+                pivot_angle_threshold=settings.pivot_angle_threshold,
+                acceleration_curve=settings.sprint_acceleration_curve,
+                braking_curve=settings.braking_curve,
+                reference_speed=settings.sprint_speed,
+            )
+            actual_gaits.add(
+                derive_actual_gait(
+                    (velocity[0] ** 2 + velocity[1] ** 2) ** 0.5,
+                    settings.walk_speed,
+                    settings.run_speed,
+                    settings.sprint_speed,
+                )
+            )
+
+        assert actual_gaits == {Gait.WALK, Gait.RUN, Gait.SPRINT}
+        assert desired[2] == settings.sprint_speed
+    finally:
+        world.close()
+
+
+def test_directional_friction_and_pivot_braking_preserve_bounded_momentum() -> None:
+    settings = Settings()
+    quarter_turn, _ = solve_horizontal_velocity(
+        (0.0, 6.5),
+        (6.5, 0.0),
+        settings.fixed_dt,
+        grounded=True,
+        ground_acceleration=settings.ground_acceleration,
+        braking_deceleration=settings.braking_deceleration,
+        ground_friction=settings.ground_friction,
+        air_acceleration=settings.air_acceleration,
+        air_control=settings.air_control,
+        air_max_speed=settings.air_max_speed,
+        ground_directional_friction=settings.ground_directional_friction,
+        turning_deceleration=settings.turning_deceleration,
+        pivot_braking_multiplier=settings.pivot_braking_multiplier,
+        pivot_angle_threshold=settings.pivot_angle_threshold,
+        acceleration_curve=settings.run_acceleration_curve,
+        braking_curve=settings.braking_curve,
+        reference_speed=settings.sprint_speed,
+    )
+    pivot, _ = solve_horizontal_velocity(
+        (0.0, 6.5),
+        (0.0, -6.5),
+        settings.fixed_dt,
+        grounded=True,
+        ground_acceleration=settings.ground_acceleration,
+        braking_deceleration=settings.braking_deceleration,
+        ground_friction=settings.ground_friction,
+        air_acceleration=settings.air_acceleration,
+        air_control=settings.air_control,
+        air_max_speed=settings.air_max_speed,
+        ground_directional_friction=settings.ground_directional_friction,
+        turning_deceleration=settings.turning_deceleration,
+        pivot_braking_multiplier=settings.pivot_braking_multiplier,
+        pivot_angle_threshold=settings.pivot_angle_threshold,
+        acceleration_curve=settings.run_acceleration_curve,
+        braking_curve=settings.braking_curve,
+        reference_speed=settings.sprint_speed,
+    )
+    assert quarter_turn[0] > 0.0 and quarter_turn[1] > 6.0
+    assert pivot[1] > 0.0
+    assert (pivot[0] ** 2 + pivot[1] ** 2) ** 0.5 < (
+        quarter_turn[0] ** 2 + quarter_turn[1] ** 2
+    ) ** 0.5
+
+
+def test_ground_plane_projection_preserves_speed_and_removes_normal_velocity() -> None:
+    angle = radians(30.0)
+    normal = (0.0, cos(angle), -sin(angle))
+    projected = project_velocity_onto_ground_plane((0.0, 0.0, 4.0), normal)
+
+    assert (sum(component * component for component in projected)) ** 0.5 == pytest.approx(4.0)
+    normal_velocity = sum(value * axis for value, axis in zip(projected, normal, strict=True))
+    assert normal_velocity == pytest.approx(0.0, abs=1e-10)
+    assert projected[1] > 0.0
 
 
 def test_air_control_preserves_existing_horizontal_inertia() -> None:
@@ -95,6 +236,99 @@ def test_rotation_solver_respects_rate_limit_and_shortest_arc() -> None:
     assert abs(yaw_rate) <= 360.0
 
 
+def test_shared_python_javascript_solver_vectors_stay_bounded_for_10_30_and_60_seconds() -> None:
+    fixtures = Path(__file__).parent / "fixtures"
+    scenario = json.loads((fixtures / "movement-drift-vectors.json").read_text())
+    tuning = json.loads((fixtures / "movement-golden-vectors.json").read_text())["tuning"]
+    durations = set(scenario["durations_seconds"])
+    velocity = (0.0, 0.0)
+    position = [0.0, 0.0]
+    acceleration = (0.0, 0.0)
+    character_yaw = 0.0
+    angular_velocity = 0.0
+    actual: dict[str, dict[str, object]] = {}
+    maximum_ticks = round(max(scenario["durations_seconds"]) / scenario["dt"])
+
+    for tick in range(1, maximum_ticks + 1):
+        segment_index = (tick - 1) // scenario["phase_ticks"] % len(scenario["segments"])
+        segment = scenario["segments"][segment_index]
+        desired, _ = desired_motion(
+            segment["move_x"],
+            segment["move_z"],
+            segment["requested_gait"],
+            segment["view_yaw"],
+            tuning["walk_speed"],
+            tuning["run_speed"],
+            tuning["sprint_speed"],
+        )
+        velocity, acceleration = solve_horizontal_velocity(
+            velocity,
+            (desired[0], desired[2]),
+            scenario["dt"],
+            grounded=True,
+            ground_acceleration=tuning["ground_acceleration"],
+            braking_deceleration=tuning["braking_deceleration"],
+            ground_friction=tuning["ground_friction"],
+            air_acceleration=tuning["air_acceleration"],
+            air_control=tuning["air_control"],
+            air_max_speed=tuning["air_max_speed"],
+            ground_directional_friction=tuning["ground_directional_friction"],
+            turning_deceleration=tuning["turning_deceleration"],
+            pivot_braking_multiplier=tuning["pivot_braking_multiplier"],
+            pivot_angle_threshold=tuning["pivot_angle_threshold"],
+            acceleration_curve=tuning[f"{segment['requested_gait']}_acceleration_curve"],
+            braking_curve=tuning["braking_curve"],
+            reference_speed=tuning["sprint_speed"],
+        )
+        position[0] += velocity[0] * scenario["dt"]
+        position[1] += velocity[1] * scenario["dt"]
+        facing = desired_facing_yaw(
+            RotationMode(segment["rotation_mode"]),
+            segment["view_yaw"],
+            segment["move_x"],
+            segment["move_z"],
+        )
+        desired_yaw = character_yaw if facing is None else facing
+        character_yaw, angular_velocity = solve_rotation(
+            character_yaw,
+            angular_velocity,
+            desired_yaw,
+            scenario["dt"],
+            max_speed=tuning["max_rotation_speed"],
+            acceleration=tuning["rotation_acceleration"],
+            deceleration=tuning["rotation_deceleration"],
+            turn_speed_curve=tuning["turn_speed_curve"],
+        )
+        seconds = tick * scenario["dt"]
+        if seconds not in durations:
+            continue
+        actual[str(int(seconds))] = {
+            "position": [*position],
+            "velocity": [*velocity],
+            "acceleration": [*acceleration],
+            "yaw": character_yaw,
+            "yaw_rate": angular_velocity,
+            "actual_gait": derive_actual_gait(
+                (velocity[0] ** 2 + velocity[1] ** 2) ** 0.5,
+                tuning["walk_speed"],
+                tuning["run_speed"],
+                tuning["sprint_speed"],
+            ).value,
+        }
+
+    assert set(actual) == {str(value) for value in durations}
+    for seconds in scenario["durations_seconds"]:
+        expected = scenario["expected"][str(seconds)]
+        observed = actual[str(seconds)]
+        for field in ("position", "velocity", "acceleration"):
+            assert observed[field] == pytest.approx(expected[field], abs=scenario["tolerance"])
+        assert observed["yaw"] == pytest.approx(expected["yaw"], abs=scenario["tolerance"])
+        assert observed["yaw_rate"] == pytest.approx(
+            expected["yaw_rate"], abs=scenario["tolerance"]
+        )
+        assert observed["actual_gait"] == expected["actual_gait"]
+
+
 def test_landing_tiers_have_distinct_motion_semantics() -> None:
     assert landing_classification(2.0, 4.0, 9.0) == (LocomotionPhase.SOFT_LAND, "soft")
     assert landing_classification(6.0, 4.0, 9.0) == (LocomotionPhase.NORMAL_LAND, "normal")
@@ -108,7 +342,9 @@ def test_jump_apex_fall_landing_events_are_ordered() -> None:
         settle(world)
         world.queue_input(
             character.entity_id,
-            InputCommand(1, 1, 0.0, 0.0, True, False, 0.0, 0.0, "orient_to_movement"),
+            InputCommand(
+                1, 1, 0.0, 0.0, True, RequestedGait.RUN, 0.0, 0.0, "orient_to_movement"
+            ),
         )
         events = []
         for _ in range(100):
@@ -159,7 +395,15 @@ def test_hit_reaction_is_an_action_layer_over_locomotion() -> None:
             world.queue_input(
                 character.entity_id,
                 InputCommand(
-                    sequence, sequence, 0.0, 1.0, False, False, 0.0, 0.0, "orient_to_movement"
+                    sequence,
+                    sequence,
+                    0.0,
+                    1.0,
+                    False,
+                    RequestedGait.RUN,
+                    0.0,
+                    0.0,
+                    "orient_to_movement",
                 ),
             )
             world.tick(world.settings.fixed_dt)
@@ -175,7 +419,9 @@ def test_hit_reaction_is_an_action_layer_over_locomotion() -> None:
         )
         world.queue_input(
             character.entity_id,
-            InputCommand(25, 25, 0.0, 1.0, False, False, 0.0, 0.0, "orient_to_movement"),
+            InputCommand(
+                25, 25, 0.0, 1.0, False, RequestedGait.RUN, 0.0, 0.0, "orient_to_movement"
+            ),
         )
         events = world.tick(world.settings.fixed_dt)
         assert character.action_layer is ActionLayer.HIT_REACTION
@@ -195,22 +441,40 @@ def test_pivot_and_turn_in_place_are_derived_from_motion_inputs() -> None:
             world.queue_input(
                 character.entity_id,
                 InputCommand(
-                    sequence, sequence, 0.0, 1.0, False, False, 0.0, 0.0, "orient_to_movement"
+                    sequence,
+                    sequence,
+                    0.0,
+                    1.0,
+                    False,
+                    RequestedGait.RUN,
+                    0.0,
+                    0.0,
+                    "orient_to_movement",
                 ),
             )
             world.tick(world.settings.fixed_dt)
         world.queue_input(
             character.entity_id,
-            InputCommand(45, 45, 0.0, -1.0, False, False, 0.0, 0.0, "orient_to_movement"),
+            InputCommand(
+                45, 45, 0.0, -1.0, False, RequestedGait.RUN, 0.0, 0.0, "orient_to_movement"
+            ),
         )
         world.tick(world.settings.fixed_dt)
         assert character.movement.locomotion_phase is LocomotionPhase.PIVOT
 
         world.queue_input(
             character.entity_id,
-            InputCommand(46, 46, 0.0, 0.0, False, False, 90.0, 0.0, "orient_to_movement"),
+            InputCommand(
+                46, 46, 0.0, 0.0, False, RequestedGait.RUN, 90.0, 0.0, "orient_to_movement"
+            ),
         )
         world.tick(world.settings.fixed_dt)
         assert character.movement.locomotion_phase is LocomotionPhase.TURN_IN_PLACE
+        turn_snapshot = world.snapshot()["players"][0]
+        assert turn_snapshot["phase_duration_ticks"] > 0
+        assert 0.0 <= turn_snapshot["phase_progress"] <= 1.0
+        assert turn_snapshot["turn_direction"] in {"left", "right"}
+        assert 0.0 <= turn_snapshot["turn_progress"] <= 1.0
+        assert abs(turn_snapshot["remaining_turn_angle"]) <= 180.0
     finally:
         world.close()

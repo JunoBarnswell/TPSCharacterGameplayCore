@@ -301,12 +301,26 @@
               <div class="stat-cell"><span>AIM YAW · AIM PITCH</span><strong id="aimValue">—</strong></div>
               <div class="stat-cell"><span>YAW RATE</span><strong id="yawRateValue">—</strong></div>
               <div class="stat-cell"><span>PREDICTED · AUTH · CORRECTION</span><strong id="correctionValue">—</strong></div>
+              <div class="stat-cell"><span>POS · ROT · VEL ERROR · RECONCILIATIONS</span><strong id="predictionErrorValue">—</strong></div>
               <div class="stat-cell"><span>OWNER SMOOTHING · SNAP DISTANCE</span><strong id="ownerSmoothingValue">—</strong></div>
-              <div class="stat-cell"><span>REMOTE DELAY · EXTRAPOLATION · TELEPORT</span><strong id="remoteMotionValue">—</strong></div>
+              <div class="stat-cell"><span>ADAPTIVE DELAY · EXTRAPOLATION · BUFFER / CLOCK</span><strong id="remoteMotionValue">—</strong></div>
               <div class="stat-cell"><span>SIM HZ · SNAP HZ · RENDER FPS</span><strong id="ratesValue">—</strong></div>
+              <div class="stat-cell"><span>SERVER TICK · MIN HZ / LAST / P95 MS</span><strong id="serverTickMetricsValue">Waiting for server metrics</strong></div>
+              <div class="stat-cell"><span>SNAPSHOT PAYLOAD · MAX / AVG BYTES</span><strong id="snapshotPayloadMetricsValue">Waiting for server metrics</strong></div>
+              <div class="stat-cell"><span>ENQUEUED SNAPSHOT · KB/S / MESSAGES/S</span><strong id="snapshotBandwidthMetricsValue">Waiting for server metrics</strong></div>
+              <div class="stat-cell"><span>SERVER PHASE P95 · MOVE / PHYSICS / SNAP MS</span><strong id="serverPhaseMetricsValue">Waiting for server metrics</strong></div>
               <div class="stat-cell"><span>PING · JITTER · PENDING INPUTS</span><strong id="networkStatsValue">—</strong></div>
               <div class="stat-cell"><span>ANIMATION BLEND · WARP ANGLE</span><strong id="animationValue">—</strong></div>
-              <div class="stat-cell"><span>ROOT OFFSET · SKELETON DATA</span><strong id="rootOffsetValue">Unavailable · 2D Lab</strong></div>
+              <div class="stat-cell"><span>AIM SAMPLES · ACTION CHANNELS (SEMANTIC)</span><strong id="animationLayersValue">—</strong></div>
+              <div class="stat-cell"><span>TRAJECTORY SOLVER · MS</span><strong id="trajectoryCostValue">—</strong></div>
+              <div class="stat-cell"><span>TRAJECTORY · +0.2 / +0.4 / +0.6 / +0.8 / +1.0 S</span><strong id="trajectoryPreviewValue">Awaiting movement state</strong></div>
+              <div class="stat-cell"><span>FOOT IK · SYNTHETIC CONTACT / PELVIS</span><strong id="footIKDebugValue">Waiting for MotionFrame</strong></div>
+              <div class="stat-cell"><span>POSE WARP · DISTRIBUTED BONE YAW</span><strong id="poseWarpDebugValue">Waiting for MotionFrame</strong></div>
+              <div class="stat-cell"><span>ROOT MOTION / SYNTHETIC TARGET WARP</span><strong id="rootMotionDebugValue">Waiting for MotionFrame</strong></div>
+              <div class="stat-cell"><span>POSE SEARCH · CURRENT → SELECTED / COST</span><strong id="poseSearchDebugValue">Synthetic database initializing</strong></div>
+              <div class="stat-cell"><span>POSE COST · TRAJECTORY · VELOCITY · FACING</span><strong id="poseSearchCostValue">—</strong></div>
+              <div class="stat-cell"><span>POSE HISTORY · SAMPLES / CRITICAL BONES</span><strong id="poseHistoryDebugValue">0 / root, pelvis, feet</strong></div>
+              <div class="stat-cell"><span>VISUAL ROOT OFFSET · MAGNITUDE</span><strong id="rootOffsetValue">Waiting for MotionFrame</strong></div>
             </div>
           </div>
         </section>
@@ -335,15 +349,35 @@
         </section>
       </aside>
     </div>
-    <p class="footnote">The server owns collision, life and authoritative movement. Prediction/replay, visual smoothing, remote interpolation and animation blend semantics run in the browser; this canvas lab has no production skeleton or IK backend.</p>
+    <p class="footnote">The server owns collision, life and authoritative movement. Prediction/replay, visual smoothing, remote interpolation and animation motion algorithms run in the browser; skeletal diagnostics use an explicitly synthetic seven-bone rig, not production assets.</p>
   </main>
 
   <script type="module">
     "use strict";
 
-    import { NetworkSimulator, PredictionHistory, RemoteSnapshotBuffer, VisualSmoothing } from "/web/motion/network-motion.mjs";
-    import { createMotionFrame, MotionHistory, PoseHistory, predictTrajectory } from "/web/motion/motion-frame.mjs";
+    import {
+      AdaptiveInterpolationDelay,
+      NetworkSimulator,
+      PredictionHistory,
+      RemoteSnapshotBuffer,
+      ServerClockEstimator,
+      VisualTransformSmoothing,
+    } from "/web/motion/network-motion.mjs";
+    import { CollisionWorld } from "/web/motion/collision-world.mjs";
+    import { BlendWeightSmoothing } from "/web/animation/blend-weight-smoothing.mjs";
+    import { createMotionFrame, MotionHistory } from "/web/motion/motion-frame.mjs";
+    import { rolloutTrajectory } from "/web/motion/trajectory.mjs";
     import { evaluateAnimationGraph } from "/web/animation/animation-graph.mjs";
+    import { createPose, createSkeleton, createTransform, worldTransforms } from "/web/animation/pose.mjs";
+    import { solveFootIK } from "/web/animation/foot-ik.mjs";
+    import { warpPoseOrientation } from "/web/animation/orientation-warp.mjs";
+    import { applyVisualRootOffset } from "/web/animation/root-offset.mjs";
+    import { MotionWarpTarget, warpRootMotionDelta } from "/web/animation/motion-warp.mjs";
+    import { extractRootMotionDelta } from "/web/animation/root-motion.mjs";
+    import { PoseHistory } from "/web/animation/motion-matching/pose-history.mjs";
+    import { PoseDatabase } from "/web/animation/motion-matching/pose-database.mjs";
+    import { PoseSearch } from "/web/animation/motion-matching/pose-search.mjs";
+    import { MotionMatcher } from "/web/animation/motion-matching/motion-matcher.mjs";
 
     const $ = (id) => document.getElementById(id);
     const canvas = $("arena");
@@ -355,9 +389,13 @@
       predictionHistoryLimit: 256,
       ownerCorrectionSmoothingSeconds: 0.12,
       ownerSnapDistance: 3.0,
-      remoteInterpolationDelaySeconds: 0.1,
+      largeCorrectionThreshold: 0.5,
+      remoteInterpolationMinMs: 50,
+      remoteInterpolationMaxMs: 300,
+      remoteInterpolationInitialMs: 100,
       maxRemoteExtrapolationSeconds: 0.1,
       remoteTeleportThreshold: 10.0,
+      remoteMaxVisualVelocity: 16.0,
       maxRemoteSnapshots: 32,
     });
     const keysForMovement = new Set([
@@ -379,22 +417,104 @@
     let snapshotIntervalTicks = 3;
     let snapshotRate = 0;
     let movementTuning = null;
+    let collisionWorld = null;
     let authoritativeSelf = null;
-    const prediction = new PredictionHistory(networkMotionSettings.predictionHistoryLimit);
-    const smoother = new VisualSmoothing(
-      networkMotionSettings.ownerCorrectionSmoothingSeconds,
-      networkMotionSettings.ownerSnapDistance,
+    const prediction = new PredictionHistory(
+      networkMotionSettings.predictionHistoryLimit,
+      networkMotionSettings.largeCorrectionThreshold,
     );
+    const smoother = new VisualTransformSmoothing({
+      durationSeconds: networkMotionSettings.ownerCorrectionSmoothingSeconds,
+      snapDistance: networkMotionSettings.ownerSnapDistance,
+      mode: "exponential",
+    });
+    const serverClock = new ServerClockEstimator(tickRate);
+    const adaptiveInterpolationDelay = new AdaptiveInterpolationDelay({
+      minMs: networkMotionSettings.remoteInterpolationMinMs,
+      maxMs: networkMotionSettings.remoteInterpolationMaxMs,
+      initialMs: networkMotionSettings.remoteInterpolationInitialMs,
+    });
     const networkSimulator = new NetworkSimulator();
     const remoteBuffers = new Map();
     const motionHistory = new MotionHistory(180);
-    const poseHistory = new PoseHistory(180);
-    const inertializer = new Map();
+    const blendWeightSmoother = new BlendWeightSmoothing();
+    const motionRig = createSkeleton([
+      { name: "root", parentIndex: -1 },
+      { name: "pelvis", parentIndex: 0, bindLocal: createTransform([0, 1, 0]) },
+      { name: "spine", parentIndex: 1, bindLocal: createTransform([0, 0.3, 0]) },
+      { name: "left_foot", parentIndex: 1, bindLocal: createTransform([-0.2, -1, 0]) },
+      { name: "right_foot", parentIndex: 1, bindLocal: createTransform([0.2, -1, 0]) },
+      { name: "chest", parentIndex: 2, bindLocal: createTransform([0, 0.3, 0]) },
+      { name: "head", parentIndex: 5, bindLocal: createTransform([0, 0.3, 0]) },
+    ]);
+    const motionSampleTimes = [0.2, 0.4, 0.6, 0.8, 1.0];
+    const syntheticPose = ({
+      rootPosition = [0, 0, 0], yaw = 0, leftStep = 0, rightStep = 0, crouch = 0,
+    } = {}) => {
+      const halfYaw = yaw * Math.PI / 360;
+      return createPose(motionRig, [
+        createTransform(rootPosition, [0, Math.sin(halfYaw), 0, Math.cos(halfYaw)]),
+        createTransform([0, 1 - crouch, 0]),
+        createTransform([0, 0.3, 0]),
+        createTransform([-0.2, -1 + crouch, leftStep]),
+        createTransform([0.2, -1 + crouch, rightStep]),
+        createTransform([0, 0.3, 0]),
+        createTransform([0, 0.3, 0]),
+      ]);
+    };
+    const syntheticMotionDefinitions = [
+      { name: "idle", velocity: [0, 0, 0], yaw: 0, leftStep: 0, rightStep: 0 },
+      { name: "walk_forward", velocity: [0, 0, 2], yaw: 0, leftStep: 0.1, rightStep: -0.1 },
+      { name: "run_forward", velocity: [0, 0, 4.5], yaw: 0, leftStep: 0.22, rightStep: -0.22 },
+      { name: "sprint_forward", velocity: [0, 0, 6.5], yaw: 0, leftStep: 0.3, rightStep: -0.3 },
+      { name: "pivot_reverse", velocity: [0, 0, -2], yaw: 180, leftStep: -0.25, rightStep: 0.25 },
+      { name: "turn_left_90", velocity: [0, 0, 0], yaw: -90, leftStep: 0, rightStep: 0 },
+      { name: "turn_right_90", velocity: [0, 0, 0], yaw: 90, leftStep: 0, rightStep: 0 },
+    ];
+    const motionDatabaseCandidates = syntheticMotionDefinitions.map((definition) => {
+      const sampleHistory = new PoseHistory(1);
+      const pose = syntheticPose(definition);
+      const trajectory = motionSampleTimes.map((time) => ({
+        time,
+        position: definition.velocity.map((value) => value * time),
+        velocity: [...definition.velocity],
+        facing: definition.yaw,
+      }));
+      const sample = sampleHistory.push(pose, {
+        tick: 1,
+        rootVelocity: definition.velocity,
+        trajectory,
+        clipName: definition.name,
+        timeSeconds: 0,
+      });
+      return {
+        id: sample.id,
+        clipName: sample.clipName,
+        timeSeconds: sample.timeSeconds,
+        pose: sample.pose,
+        features: sample.features,
+      };
+    });
+    const motionMatcher = new MotionMatcher(new PoseSearch(new PoseDatabase(motionDatabaseCandidates)), {
+      candidateLimit: 3,
+    });
+    const livePoseHistory = new PoseHistory(180);
+    const syntheticLandingTarget = new MotionWarpTarget("synthetic-vault-landing", [1.5, 0, 0], 90);
+    let currentPoseMatch = null;
+    let poseSearchMs = 0;
+    let footIKMs = 0;
+    let poseWarpMs = 0;
+    let rootOffsetMagnitude = 0;
+    let rootWarpPreview = null;
     const pendingPings = new Map();
-    let renderPosition = null;
+    let visualTransform = null;
+    let remoteRenderTick = 0;
     let currentMotionFrame = null;
     let currentTrajectory = [];
     let currentAnimation = null;
+    let lastTrajectoryUpdateAt = -Infinity;
+    let trajectorySolverMs = 0;
+    let animationRuntimeMs = 0;
     let lastAcknowledgedInput = -1;
     let lastAckDelayMs = null;
     let lastPingMs = null;
@@ -406,6 +526,7 @@
     let renderedFrameCount = 0;
     let inputTimer = null;
     let pingTimer = null;
+    let metricsTimer = null;
     let previousRenderAt = null;
     const turnRateDegreesPerSecond = 120;
 
@@ -468,16 +589,25 @@
       viewPitch = 0;
       rotationMode = $("rotationModeSelect").value;
       tickRate = 60;
+      serverClock.setTickRate(tickRate);
+      serverClock.reset();
+      adaptiveInterpolationDelay.reset();
       snapshotIntervalTicks = 3;
       snapshotRate = 0;
       $("serverRateValue").textContent = "—";
       $("snapshotRateValue").textContent = "—";
       movementTuning = null;
+      collisionWorld = null;
       authoritativeSelf = null;
       prediction.state = null;
       prediction.inputs = [];
       remoteBuffers.clear();
-      renderPosition = null;
+      visualTransform = null;
+      smoother.reset();
+      blendWeightSmoother.reset();
+        remoteRenderTick = 0;
+      lastTrajectoryUpdateAt = -Infinity;
+      trajectorySolverMs = 0;
       lastAcknowledgedInput = -1;
       lastAckDelayMs = null;
       pendingPings.clear();
@@ -499,7 +629,7 @@
 
       socket.addEventListener("open", () => {
         setConnection("connected", "Connected · joining");
-        send({ type: "hello", protocol_version: 2 });
+        send({ type: "hello", protocol_version: 6 });
       });
       socket.addEventListener("message", (event) => {
         let message;
@@ -530,6 +660,7 @@
         authoritativeSelf = null;
         prediction.state = null;
         prediction.inputs = [];
+        blendWeightSmoother.reset();
         remoteBuffers.clear();
         players.clear();
         projectiles.clear();
@@ -544,18 +675,44 @@
         const tuning = message.movement_tuning;
         const requiredTuning = [
           "walk_speed", "run_speed", "sprint_speed", "air_control", "ground_acceleration",
-          "braking_deceleration", "ground_friction", "air_acceleration", "air_max_speed",
+          "braking_deceleration", "ground_friction", "ground_directional_friction",
+          "turning_deceleration", "pivot_braking_multiplier", "air_acceleration", "air_max_speed",
           "max_rotation_speed", "rotation_acceleration", "rotation_deceleration",
           "turn_in_place_threshold", "pivot_angle_threshold", "jump_speed", "gravity",
           "max_fall_speed", "apex_velocity_threshold", "jump_cooldown_seconds",
           "landing_soft_velocity", "landing_heavy_velocity", "landing_recovery_seconds",
+          "max_walkable_slope", "ground_probe_radius", "ground_probe_depth",
+          "ground_probe_start_offset", "ground_snap_distance", "ground_grace_distance",
+          "ground_grace_ticks", "character_step_height", "character_radius",
+          "character_cylinder_height",
         ];
+        const curveKeys = [
+          "walk_acceleration_curve", "run_acceleration_curve", "sprint_acceleration_curve",
+          "braking_curve", "turn_speed_curve",
+        ];
+        const validCurve = (curve) => {
+          if (!Array.isArray(curve) || curve.length < 2 || curve[0]?.[0] !== 0 || curve.at(-1)?.[0] !== 1) {
+            return false;
+          }
+          let previousX = -1;
+          return curve.every((point) => {
+            if (!Array.isArray(point) || point.length !== 2 ||
+                !Number.isFinite(point[0]) || !Number.isFinite(point[1]) ||
+                point[0] <= previousX || point[1] < 0) return false;
+            previousX = point[0];
+            return true;
+          });
+        };
+        const validCurves = tuning && curveKeys.every((key) =>
+          Object.hasOwn(tuning, key) && validCurve(tuning[key]));
         const validTuning = tuning && requiredTuning.every((key) =>
           Object.hasOwn(tuning, key) && Number.isFinite(tuning[key])) &&
           tuning.walk_speed > 0 && tuning.run_speed >= tuning.walk_speed &&
           tuning.sprint_speed >= tuning.run_speed && tuning.air_control >= 0 && tuning.air_control <= 1 &&
           tuning.ground_acceleration > 0 && tuning.air_acceleration >= 0 &&
           tuning.braking_deceleration >= 0 && tuning.ground_friction >= 0 &&
+          tuning.ground_directional_friction >= 0 && tuning.turning_deceleration >= 0 &&
+          tuning.pivot_braking_multiplier >= 1 && validCurves &&
           tuning.pivot_angle_threshold >= 90 && tuning.pivot_angle_threshold <= 180 &&
           tuning.apex_velocity_threshold >= 0 && tuning.air_max_speed > 0 &&
           tuning.max_rotation_speed > 0 && tuning.rotation_acceleration > 0 &&
@@ -563,18 +720,39 @@
           tuning.jump_speed > 0 && tuning.gravity > 0 && tuning.max_fall_speed > 0 &&
           tuning.jump_cooldown_seconds >= 0 && tuning.landing_soft_velocity >= 0 &&
           tuning.landing_heavy_velocity > tuning.landing_soft_velocity &&
-          tuning.landing_recovery_seconds >= 0;
-        if (message.protocol_version !== 2 || !Number.isInteger(message.tick_rate) || message.tick_rate < 60 || message.tick_rate > 120 || !Number.isInteger(message.snapshot_interval_ticks) || message.snapshot_interval_ticks < 1 || !validTuning) {
+          tuning.landing_recovery_seconds >= 0 && tuning.ground_probe_radius > 0 &&
+          tuning.ground_probe_depth > 0 && tuning.ground_snap_distance >= 0 &&
+          tuning.character_radius > 0 && tuning.character_cylinder_height > 0 &&
+          tuning.character_step_height >= 0;
+        const profile = message.collision_world;
+        const isVector3 = (value) => Array.isArray(value) && value.length === 3 &&
+          value.every(Number.isFinite);
+        const validProfile = profile?.version === 1 && Array.isArray(profile.planes) &&
+          Array.isArray(profile.boxes) && Array.isArray(profile.ramps) &&
+          profile.planes.every((plane) => typeof plane.name === "string" &&
+            isVector3(plane.normal) && Number.isFinite(plane.constant)) &&
+          profile.boxes.every((box) => typeof box.name === "string" &&
+            isVector3(box.center) && isVector3(box.half_extents) &&
+            box.half_extents.every((value) => value > 0)) &&
+          profile.ramps.every((ramp) => typeof ramp.name === "string" &&
+            isVector3(ramp.center) && isVector3(ramp.half_extents) &&
+            ramp.half_extents.every((value) => value > 0) &&
+            Number.isFinite(ramp.pitch_degrees));
+        if (message.protocol_version !== 6 || !Number.isInteger(message.tick_rate) || message.tick_rate < 60 || message.tick_rate > 120 || !Number.isInteger(message.snapshot_interval_ticks) || message.snapshot_interval_ticks < 1 || !validTuning || !validProfile) {
           setConnection("error", "Server must support 60 Hz");
-          addEvent("Server must provide 60–120 Hz tick_rate and valid movement_tuning.", "error");
+          addEvent("Server must provide 60–120 Hz tick_rate, valid movement_tuning and collision_world.", "error");
           socket?.close(1002, "unsupported simulation rate or missing movement tuning");
           return;
         }
         tickRate = message.tick_rate;
+        serverClock.setTickRate(tickRate);
+        serverClock.reset();
+        adaptiveInterpolationDelay.reset();
         snapshotIntervalTicks = message.snapshot_interval_ticks;
         $("serverRateValue").textContent = String(tickRate);
         $("snapshotRateValue").textContent = (tickRate / snapshotIntervalTicks).toFixed(1);
         movementTuning = message.movement_tuning;
+        collisionWorld = new CollisionWorld(profile);
         addEvent(`Protocol ${message.protocol_version} · simulation ${message.tick_rate} Hz · snapshots ${(tickRate / snapshotIntervalTicks).toFixed(1)} Hz`);
         const room = $("roomId").value.trim();
         send({
@@ -607,31 +785,62 @@
           $("snapshotRateValue").textContent = snapshotRate.toFixed(1);
         }
         latestTick = message.tick;
+        serverClock.observe(message.tick, receivedAt, lastPingMs);
+        adaptiveInterpolationDelay.observe(message.tick, receivedAt, tickRate, lastPingMs);
         $("tickValue").textContent = latestTick;
         players.clear();
         projectiles.clear();
+        const remotePlayerIds = new Set();
         for (const player of message.players || []) {
-          players.set(player.player_id, player);
-          if (player.player_id !== playerId) {
-            const buffer = remoteBuffers.get(player.player_id) || new RemoteSnapshotBuffer(
-              networkMotionSettings.maxRemoteSnapshots,
-              networkMotionSettings.remoteTeleportThreshold,
-            );
-            buffer.push({ ...player, tick: message.tick });
-            remoteBuffers.set(player.player_id, buffer);
+          if (player.player_id === playerId) {
+            setConnection("error", "Snapshot included owner in remote profile");
+            addEvent("Snapshot profile must keep owner state separate from remote players.", "error");
+            socket?.close(1002, "invalid snapshot profile");
+            return;
           }
+          players.set(player.player_id, player);
+          remotePlayerIds.add(player.player_id);
+          const buffer = remoteBuffers.get(player.player_id) || new RemoteSnapshotBuffer(
+            networkMotionSettings.maxRemoteSnapshots,
+            networkMotionSettings.remoteTeleportThreshold,
+            { maxVisualVelocity: networkMotionSettings.remoteMaxVisualVelocity },
+          );
+          buffer.push({ ...player, tick: message.tick });
+          remoteBuffers.set(player.player_id, buffer);
+        }
+        for (const playerIdFromBuffer of remoteBuffers.keys()) {
+          if (!remotePlayerIds.has(playerIdFromBuffer)) remoteBuffers.delete(playerIdFromBuffer);
         }
         for (const projectile of message.projectiles || []) projectiles.set(projectile.projectile_id, projectile);
-        authoritativeSelf = players.get(playerId) || null;
+        if (!message.owner || message.owner.player_id !== playerId) {
+          setConnection("error", "Snapshot owner does not match this session");
+          addEvent("Snapshot owner profile does not match the joined player.", "error");
+          socket?.close(1002, "invalid snapshot owner");
+          return;
+        }
+        authoritativeSelf = message.owner;
+        players.set(playerId, authoritativeSelf);
         if (authoritativeSelf && movementTuning) {
-          const previousVisual = renderPosition || prediction.state?.position || authoritativeSelf.position;
+          const previousVisual = visualTransform || {
+            position: prediction.state?.position || authoritativeSelf.position,
+            character_yaw: prediction.state?.character_yaw ?? authoritativeSelf.character_yaw,
+          };
           const acknowledged = prediction.inputs.find(({ input }) => input.sequence === authoritativeSelf.last_processed_input);
           if (acknowledged) lastAckDelayMs = Math.max(0, performance.now() - acknowledged.sentAt);
           const authoritativeMotion = { ...authoritativeSelf, server_tick: message.tick, simulation_tick: message.tick };
           const corrected = prediction.state
-            ? prediction.reconcile(authoritativeMotion, authoritativeSelf.last_processed_input, movementTuning, 1 / tickRate)
+            ? prediction.reconcile(
+              authoritativeMotion,
+              authoritativeSelf.last_processed_input,
+              movementTuning,
+              1 / tickRate,
+              collisionWorld,
+            )
             : (prediction.reset(authoritativeMotion), prediction.state);
-          smoother.correct(previousVisual, corrected.position);
+          smoother.correct(previousVisual, {
+            position: corrected.position,
+            character_yaw: corrected.character_yaw,
+          });
           lastAcknowledgedInput = Math.max(lastAcknowledgedInput, authoritativeSelf.last_processed_input);
         }
         renderSnapshot();
@@ -658,14 +867,52 @@
       stopTimers();
       inputTimer = window.setInterval(sendInput, 1000 / tickRate);
       pingTimer = window.setInterval(sendPing, 5000);
+      metricsTimer = window.setInterval(updateServerMetrics, 1000);
+      updateServerMetrics();
       sendInput();
     }
 
     function stopTimers() {
       if (inputTimer !== null) window.clearInterval(inputTimer);
       if (pingTimer !== null) window.clearInterval(pingTimer);
+      if (metricsTimer !== null) window.clearInterval(metricsTimer);
       inputTimer = null;
       pingTimer = null;
+      metricsTimer = null;
+    }
+
+    async function updateServerMetrics() {
+      try {
+        const response = await fetch("/metrics", { cache: "no-store" });
+        if (!response.ok) throw new Error(`/metrics returned HTTP ${response.status}`);
+        const metrics = await response.json();
+        const names = [
+          "server_tick_duration_ms_last", "server_tick_duration_ms_p95",
+          "server_tick_rate_observed_1s_min_room", "snapshot_size_bytes_last",
+          "snapshot_size_bytes_avg_last_tick", "snapshot_bytes_enqueued_per_second",
+          "snapshot_enqueue_rate_1s", "movement_solver_duration_ms_p95",
+          "physics_duration_ms_p95", "snapshot_duration_ms_p95",
+        ];
+        for (const name of names) {
+          if (!Number.isFinite(metrics[name]) || metrics[name] < 0) {
+            throw new TypeError(`server metric '${name}' is missing or invalid`);
+          }
+        }
+        $("serverTickMetricsValue").textContent =
+          `${metrics.server_tick_rate_observed_1s_min_room} Hz · ${metrics.server_tick_duration_ms_last.toFixed(2)} / ${metrics.server_tick_duration_ms_p95.toFixed(2)} ms`;
+        $("snapshotPayloadMetricsValue").textContent =
+          `${metrics.snapshot_size_bytes_last} / ${metrics.snapshot_size_bytes_avg_last_tick.toFixed(0)} bytes`;
+        $("snapshotBandwidthMetricsValue").textContent =
+          `${(metrics.snapshot_bytes_enqueued_per_second / 1024).toFixed(1)} KB/s enqueued · ${metrics.snapshot_enqueue_rate_1s}/s`;
+        $("serverPhaseMetricsValue").textContent =
+          `${metrics.movement_solver_duration_ms_p95.toFixed(2)} / ${metrics.physics_duration_ms_p95.toFixed(2)} / ${metrics.snapshot_duration_ms_p95.toFixed(2)} ms`;
+      } catch (error) {
+        const message = `Unavailable · ${String(error)}`;
+        $("serverTickMetricsValue").textContent = message;
+        $("snapshotPayloadMetricsValue").textContent = message;
+        $("snapshotBandwidthMetricsValue").textContent = message;
+        $("serverPhaseMetricsValue").textContent = message;
+      }
     }
 
     function sendInput() {
@@ -687,7 +934,9 @@
         move_x: moveX,
         move_z: moveZ,
         jump: pressed.has("Space"),
-        sprint: pressed.has("ShiftLeft") || pressed.has("ShiftRight"),
+        requested_gait: pressed.has("ShiftLeft") || pressed.has("ShiftRight")
+          ? "sprint"
+          : pressed.has("AltLeft") || pressed.has("AltRight") ? "walk" : "run",
         view_yaw: viewYaw,
         view_pitch: viewPitch,
         rotation_mode: rotationMode,
@@ -697,7 +946,7 @@
       delete wireInput.sentAt;
       if (!send(wireInput)) return;
       if (authoritativeSelf && prediction.state && movementTuning) {
-        prediction.predict(input, movementTuning, 1 / tickRate);
+        prediction.predict(input, movementTuning, 1 / tickRate, collisionWorld);
       }
       lastInputSentAt = now;
       sequence++;
@@ -773,12 +1022,12 @@
       $("yawValue").textContent = `${Number(viewYaw).toFixed(1)}°`;
       const ackDelay = lastAckDelayMs === null ? "—" : `${Math.round(lastAckDelayMs)} ms`;
       $("ackValue").textContent = `#${self.last_processed_input} · ${ackDelay}`;
-      $("movementValue").textContent = `${self.movement_mode.toUpperCase()} · ${self.gait.toUpperCase()}`;
-      $("phaseValue").textContent = `${self.locomotion_phase.toUpperCase()} · ${self.action_layer.toUpperCase()} · ${self.life_state.toUpperCase()}`;
+      $("movementValue").textContent = `${self.movement_mode.toUpperCase()} · ${self.actual_gait.toUpperCase()} (requested ${self.requested_gait.toUpperCase()})`;
+      $("phaseValue").textContent = `${self.locomotion_phase.toUpperCase()} ${Math.round(Number(self.phase_progress) * 100)}% · turn ${self.turn_direction} ${Math.round(Number(self.turn_progress) * 100)}% / ${Number(self.remaining_turn_angle).toFixed(1)}° · ${self.action_layer.toUpperCase()} · ${self.life_state.toUpperCase()}`;
       $("rotationModeValue").textContent = self.rotation_mode.toUpperCase();
       $("accelValue").textContent = formatVector(self.acceleration);
       $("desiredMovementValue").textContent = `${formatVector([self.desired_velocity[0], self.desired_velocity[2]])} · ${Number(self.horizontal_speed).toFixed(2)} m/s`;
-      $("floorValue").textContent = `${self.grounded ? "YES" : "NO"} · ${formatVector(self.floor_normal)} · ${Number(self.slope_angle).toFixed(1)}° · ${self.floor_distance === null ? "—" : Number(self.floor_distance).toFixed(2)}m`;
+      $("floorValue").textContent = `${self.grounded ? "YES" : "NO"} · contact ${self.ground_contact_confirmed ? "YES" : "NO"} · ${self.ground_sample_count} probes · ${formatVector(self.floor_normal)} · ${Number(self.slope_angle).toFixed(1)}° · ${self.floor_distance === null ? "—" : Number(self.floor_distance).toFixed(2)}m`;
       $("facingValue").textContent = `${Number(self.character_yaw).toFixed(1)}° · ${Number(self.desired_facing_yaw).toFixed(1)}°`;
       $("viewValue").textContent = `${Number(self.view_yaw).toFixed(1)}° · ${Number(self.view_pitch).toFixed(1)}°`;
       $("aimValue").textContent = `${Number(self.aim_yaw).toFixed(1)}° · ${Number(self.aim_pitch).toFixed(1)}°`;
@@ -786,10 +1035,13 @@
       const predicted = predictPosition() || self.position;
       const correction = Math.hypot(...predicted.map((value, index) => value - self.position[index]));
       $("correctionValue").textContent = `${formatVector([predicted[0], predicted[2]])} · ${formatVector([self.position[0], self.position[2]])} · ${correction.toFixed(2)} m`;
+      const predictionMetrics = prediction.metrics;
+      $("predictionErrorValue").textContent =
+        `${predictionMetrics.position_error.toFixed(2)} m · ${predictionMetrics.rotation_error.toFixed(1)}° · ${predictionMetrics.velocity_error.toFixed(2)} m/s · ${predictionMetrics.reconciliation_count} (${predictionMetrics.large_correction_count} large)`;
       $("ownerSmoothingValue").textContent =
         `${Math.round(networkMotionSettings.ownerCorrectionSmoothingSeconds * 1000)} ms · ${networkMotionSettings.ownerSnapDistance.toFixed(1)} m`;
       $("remoteMotionValue").textContent =
-        `${Math.round(networkMotionSettings.remoteInterpolationDelaySeconds * 1000)} / ${Math.round(networkMotionSettings.maxRemoteExtrapolationSeconds * 1000)} ms · ${networkMotionSettings.remoteTeleportThreshold.toFixed(1)} m`;
+        `${Math.round(adaptiveInterpolationDelay.delayMs)} ms · ${Math.round(networkMotionSettings.maxRemoteExtrapolationSeconds * 1000)} ms · ${Math.max(0, ...[...remoteBuffers.values()].map((buffer) => buffer.samples.length))} snaps · ${Math.round(serverClock.phaseErrorTicks * 1000 / tickRate)} ms phase`;
       $("ratesValue").textContent = `${tickRate} · ${snapshotRate.toFixed(1)} · ${$("clientFpsValue").textContent}`;
       $("networkStatsValue").textContent = `${lastPingMs === null ? "—" : `${Math.round(lastPingMs)} ms`} · ${pingJitterMs === null ? "—" : `${Math.round(pingJitterMs)} ms`} · ${prediction.inputs.length}`;
       $("animationValue").textContent = currentAnimation
@@ -803,6 +1055,104 @@
 
     function bestBlend(weights) {
       return Object.entries(weights).sort((a, b) => b[1] - a[1])[0]?.[0] || "idle";
+    }
+
+    function syntheticClipForFrame(frame) {
+      if (frame.locomotionPhase === "pivot") return "pivot_reverse";
+      if (frame.locomotionPhase === "turn_in_place") {
+        return frame.turnDirection === "left" ? "turn_left_90" : "turn_right_90";
+      }
+      const selected = bestBlend(currentAnimation?.locomotion || { idle: 1 });
+      if (selected === "idle") return "idle";
+      if (selected.startsWith("sprint")) return "sprint_forward";
+      if (selected.startsWith("walk")) return "walk_forward";
+      return "run_forward";
+    }
+
+    function updateSyntheticPoseRuntime(frame, now, dt) {
+      const clipName = syntheticClipForFrame(frame);
+      const definition = syntheticMotionDefinitions.find((candidate) => candidate.name === clipName);
+      if (!definition) throw new RangeError(`synthetic motion pose '${clipName}' is missing`);
+      const cycle = now / 1000 * Math.max(0.5, frame.horizontalSpeed) * Math.PI;
+      const bob = frame.grounded ? Math.abs(Math.sin(cycle)) * Math.min(0.035, frame.horizontalSpeed * 0.004) : 0;
+      const pose = syntheticPose({
+        yaw: frame.characterYaw,
+        leftStep: definition.leftStep + Math.sin(cycle) * Math.min(0.08, frame.horizontalSpeed * 0.01),
+        rightStep: definition.rightStep - Math.sin(cycle) * Math.min(0.08, frame.horizontalSpeed * 0.01),
+        rootPosition: [frame.position[0], frame.position[1] + bob, frame.position[2]],
+      });
+      const previousPoseSample = livePoseHistory.latest(1)[0] || null;
+      livePoseHistory.push(pose, {
+        tick: Math.floor(now * 1000),
+        rootVelocity: frame.velocity,
+        trajectory: currentTrajectory,
+        clipName: `motion-lab:${clipName}`,
+        timeSeconds: now / 1000,
+        dt: Math.max(dt, 1 / 240),
+      });
+
+      const matchStartedAt = performance.now();
+      currentPoseMatch = motionMatcher.update({
+        pose,
+        rootVelocity: frame.velocity,
+        trajectory: currentTrajectory,
+        dt: Math.max(dt, 1 / 240),
+        previousSample: previousPoseSample,
+      });
+      poseSearchMs = performance.now() - matchStartedAt;
+
+      const rootOffset = applyVisualRootOffset(pose, frame.position, { maxOffset: 0.5 });
+      rootOffsetMagnitude = Math.hypot(...rootOffset.offset);
+      const warpStartedAt = performance.now();
+      const oriented = warpPoseOrientation(
+        rootOffset.pose,
+        Number(frame.worldMovementDirection ?? frame.characterYaw),
+        frame.characterYaw,
+        { root: 0.1, pelvis: 0.15, spine: 0.2, left_foot: 0.15, right_foot: 0.15, chest: 0.25 },
+      );
+      poseWarpMs = performance.now() - warpStartedAt;
+      const warpedWorld = worldTransforms(oriented.pose);
+      const leftFoot = warpedWorld[motionRig.indexByName.get("left_foot")].translation;
+      const rightFoot = warpedWorld[motionRig.indexByName.get("right_foot")].translation;
+      const footStartedAt = performance.now();
+      const footIK = solveFootIK(oriented.pose, {
+        left: {
+          grounded: frame.grounded,
+          position: [leftFoot[0], leftFoot[1] + 0.025, leftFoot[2]],
+          normal: [0, 1, 0.08],
+        },
+        right: {
+          grounded: frame.grounded,
+          position: [rightFoot[0], rightFoot[1] - 0.015, rightFoot[2]],
+          normal: [0, 1, 0],
+        },
+      });
+      footIKMs = performance.now() - footStartedAt;
+
+      const rootDelta = previousPoseSample
+        ? extractRootMotionDelta(previousPoseSample.pose, pose)
+        : { translation: [0, 0, 0], yawDelta: 0 };
+      const warpPreview = warpRootMotionDelta(
+        rootDelta,
+        { position: [0, 0, 0], character_yaw: frame.characterYaw },
+        [0.4, 0, 0],
+        syntheticLandingTarget,
+      );
+      const selected = currentPoseMatch;
+      $("footIKDebugValue").textContent = frame.grounded
+        ? `left ${formatVector(footIK.footOffsets.left)} · right ${formatVector(footIK.footOffsets.right)} · pelvis ${footIK.pelvisOffset.toFixed(3)} m · ${footIKMs.toFixed(3)} ms`
+        : `airborne · no contacts · ${footIKMs.toFixed(3)} ms`;
+      $("poseWarpDebugValue").textContent =
+        `${oriented.warpAngle.toFixed(1)}° · pelvis / spine / legs / chest distributed · ${poseWarpMs.toFixed(3)} ms`;
+      $("rootMotionDebugValue").textContent =
+        `local ${formatVector(rootDelta.translation)} · target ${syntheticLandingTarget.name} · step ${formatVector(warpPreview.translation)}`;
+      $("poseSearchDebugValue").textContent =
+        `${clipName} → ${selected.selectedClip}@${selected.selectedTimeSeconds.toFixed(2)} · ${selected.selectedPoseId} · ${selected.candidateCount} candidates · ${selected.costs.total.toFixed(3)} · ${selected.transitionReason} · ${poseSearchMs.toFixed(3)} ms`;
+      $("poseSearchCostValue").textContent =
+        `pose ${selected.costs.pose.toFixed(3)} · trajectory ${selected.costs.trajectory.toFixed(3)} · velocity ${selected.costs.velocity.toFixed(3)} · facing ${selected.costs.facing.toFixed(3)} · continuity ${selected.costs.continuity.toFixed(3)}`;
+      $("poseHistoryDebugValue").textContent =
+        `${livePoseHistory.samples.length} / ${livePoseHistory.boneNames.join(", ")}`;
+      $("rootOffsetValue").textContent = `${rootOffsetMagnitude.toFixed(3)} m · ${rootOffset.clamped ? "clamped" : "within limit"}`;
     }
 
     function resizeCanvas() {
@@ -875,13 +1225,12 @@
 
       for (const player of players.values()) {
         const self = player.player_id === playerId;
-        const renderTick = latestTick - tickRate * networkMotionSettings.remoteInterpolationDelaySeconds;
         const remote = !self ? remoteBuffers.get(player.player_id)?.sample(
-          renderTick,
+          remoteRenderTick,
           tickRate,
           networkMotionSettings.maxRemoteExtrapolationSeconds,
         ) : null;
-        const position = self ? renderPosition || predictPosition() || player.position : remote?.position || player.position;
+        const position = self ? visualTransform?.position || predictPosition() || player.position : remote?.position || player.position;
         const [x, y] = point(position[0], position[2]);
         if (self) {
           const [serverX, serverY] = point(player.position[0], player.position[2]);
@@ -902,7 +1251,7 @@
         context.textAlign = "center";
         context.fillText((player.player_name || "Player").slice(0, 12), x, y - 12);
         if (self) {
-          const angle = (Number(player.character_yaw) * Math.PI) / 180;
+          const angle = (Number(visualTransform?.character_yaw ?? player.character_yaw) * Math.PI) / 180;
           context.beginPath(); context.moveTo(x, y); context.lineTo(x + Math.sin(angle) * 14, y - Math.cos(angle) * 14);
           context.strokeStyle = "#ddfff4"; context.lineWidth = 2; context.stroke();
         }
@@ -955,26 +1304,75 @@
       const motionState = prediction.state || authoritativeSelf;
       if (motionState) {
         const simulationPosition = motionState.position || [0, 0, 0];
-        renderPosition = smoother.render(simulationPosition, dt);
-        currentMotionFrame = createMotionFrame({ ...motionState, position: renderPosition }, latestTick, dt);
+        const simulationTransform = {
+          position: simulationPosition,
+          character_yaw: Number(motionState.character_yaw ?? 0),
+        };
+        visualTransform = smoother.render(simulationTransform, dt);
+        currentMotionFrame = createMotionFrame({ ...motionState, ...visualTransform }, latestTick, dt);
         motionHistory.push(currentMotionFrame);
-        poseHistory.push(currentMotionFrame);
-        currentTrajectory = predictTrajectory(currentMotionFrame);
+        if (movementTuning && now - lastTrajectoryUpdateAt >= 50) {
+          const moveX = Number(pressed.has("KeyD")) - Number(pressed.has("KeyA"));
+          const moveZ = Number(pressed.has("KeyW")) - Number(pressed.has("KeyS"));
+          const futureIntent = {
+            move_x: moveX,
+            move_z: moveZ,
+            jump: false,
+            requested_gait: pressed.has("ShiftLeft") || pressed.has("ShiftRight")
+              ? "sprint"
+              : pressed.has("AltLeft") || pressed.has("AltRight") ? "walk" : "run",
+            view_yaw: viewYaw,
+            view_pitch: viewPitch,
+            rotation_mode: rotationMode,
+          };
+          const rolloutStartedAt = performance.now();
+          currentTrajectory = rolloutTrajectory(
+            motionState,
+            futureIntent,
+            movementTuning,
+            1 / tickRate,
+            collisionWorld,
+          );
+          trajectorySolverMs = performance.now() - rolloutStartedAt;
+          lastTrajectoryUpdateAt = now;
+        }
         if (movementTuning) {
-          currentAnimation = evaluateAnimationGraph(currentMotionFrame, movementTuning, inertializer, dt);
+          const animationStartedAt = performance.now();
+          currentAnimation = evaluateAnimationGraph(currentMotionFrame, movementTuning, blendWeightSmoother, dt);
           const selectedBlend = bestBlend(currentAnimation.locomotion);
-          $("animationValue").textContent = `${selectedBlend} ${currentAnimation.locomotion[selectedBlend].toFixed(2)} · ${currentAnimation.orientationWarp.toFixed(1)}°`;
+          updateSyntheticPoseRuntime(currentMotionFrame, now, dt);
+          animationRuntimeMs = performance.now() - animationStartedAt;
+          $("animationValue").textContent = `${selectedBlend} ${currentAnimation.locomotion[selectedBlend].toFixed(2)} · warp ${currentAnimation.orientationWarp.toFixed(1)}° · ${animationRuntimeMs.toFixed(3)} ms`;
+          const selectedAim = Object.entries(currentAnimation.aimOffset.weights)
+            .filter(([, weight]) => weight > 0.01)
+            .map(([name, weight]) => `${name} ${weight.toFixed(2)}`)
+            .join(" · ");
+          $("animationLayersValue").textContent = `${selectedAim || "center"} · ${currentAnimation.actionLayers.join(" + ") || "none"}`;
         }
         if (authoritativeSelf) {
-          const predicted = renderPosition;
+          const predicted = visualTransform.position;
           const error = Math.hypot(...predicted.map((value, index) => value - authoritativeSelf.position[index]));
           $("correctionValue").textContent = `${formatVector([predicted[0], predicted[2]])} · ${formatVector([authoritativeSelf.position[0], authoritativeSelf.position[2]])} · ${error.toFixed(2)} m`;
         }
         $("networkStatsValue").textContent = `${lastPingMs === null ? "—" : `${Math.round(lastPingMs)} ms`} · ${pingJitterMs === null ? "—" : `${Math.round(pingJitterMs)} ms`} · ${prediction.inputs.length}`;
       } else {
-        renderPosition = null;
+        visualTransform = null;
         currentTrajectory = [];
+        trajectorySolverMs = 0;
+        animationRuntimeMs = 0;
+        poseSearchMs = 0;
+        footIKMs = 0;
+        poseWarpMs = 0;
+        currentPoseMatch = null;
+        livePoseHistory.clear();
+        motionMatcher.reset();
       }
+      $("trajectoryCostValue").textContent = trajectorySolverMs.toFixed(3);
+      $("trajectoryPreviewValue").textContent = currentTrajectory.length
+        ? currentTrajectory.map((sample) => `+${sample.time.toFixed(1)}s ${formatVector([sample.position[0], sample.position[2]])}`).join(" · ")
+        : "Awaiting movement state";
+      remoteRenderTick = serverClock.estimateTick(now) -
+        adaptiveInterpolationDelay.delayMs * tickRate / 1000;
       drawArena();
       if (frameWindowStartedAt === null) frameWindowStartedAt = now;
       renderedFrameCount++;

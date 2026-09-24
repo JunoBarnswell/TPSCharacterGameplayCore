@@ -26,7 +26,7 @@ dev = [
 include = ["aster_game*"]
 
 [tool.setuptools.package-data]
-aster_game = ["web/*.html", "web/**/*.mjs"]
+aster_game = ["web/*.html", "web/**/*.mjs", "web/**/*.json"]
 
 [tool.ruff]
 target-version = "py313"

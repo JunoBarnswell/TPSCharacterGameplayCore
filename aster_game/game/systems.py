@@ -8,10 +8,10 @@ from aster_game.game.combat_system import (
     ProjectileSystem,
 )
 from aster_game.game.lifecycle_system import RespawnSystem, StateSystem
+from aster_game.game.movement.ground_system import GroundSystem
 from aster_game.game.movement_system import (
     AirLifecycleSystem,
     CommandSystem,
-    GroundSystem,
     LocomotionPhaseSystem,
     MovementSystem,
     PhysicsStepSystem,

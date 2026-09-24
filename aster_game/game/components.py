@@ -7,6 +7,7 @@ from aster_game.game.movement.state import (
     ActionLayer,
     CharacterMovementState,
     LifeState,
+    RequestedGait,
 )
 
 
@@ -70,7 +71,7 @@ class InputCommand:
     move_x: float
     move_z: float
     jump: bool
-    sprint: bool
+    requested_gait: RequestedGait
     view_yaw: float
     view_pitch: float
     rotation_mode: str

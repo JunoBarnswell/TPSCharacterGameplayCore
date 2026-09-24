@@ -3,6 +3,8 @@ from functools import lru_cache
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from aster_game.game.movement.curves import ResponseCurve, validate_response_curve
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="ASTER_GAME_", env_file=".env", extra="ignore")
@@ -24,11 +26,19 @@ class Settings(BaseSettings):
     ground_acceleration: float = Field(default=24.0, gt=0.0)
     braking_deceleration: float = Field(default=16.0, ge=0.0)
     ground_friction: float = Field(default=8.0, ge=0.0)
+    ground_directional_friction: float = Field(default=9.0, ge=0.0)
+    turning_deceleration: float = Field(default=7.0, ge=0.0)
+    pivot_braking_multiplier: float = Field(default=1.75, ge=1.0)
     air_acceleration: float = Field(default=10.0, ge=0.0)
     air_max_speed: float = Field(default=6.5, gt=0.0)
     max_rotation_speed: float = Field(default=540.0, gt=0.0)
     rotation_acceleration: float = Field(default=1440.0, gt=0.0)
     rotation_deceleration: float = Field(default=1800.0, gt=0.0)
+    walk_acceleration_curve: ResponseCurve = ((0.0, 1.25), (0.5, 1.0), (1.0, 0.6))
+    run_acceleration_curve: ResponseCurve = ((0.0, 1.35), (0.5, 1.0), (1.0, 0.65))
+    sprint_acceleration_curve: ResponseCurve = ((0.0, 1.5), (0.5, 1.0), (1.0, 0.7))
+    braking_curve: ResponseCurve = ((0.0, 0.6), (0.35, 1.0), (1.0, 1.35))
+    turn_speed_curve: ResponseCurve = ((0.0, 0.22), (0.25, 0.55), (1.0, 1.0))
     turn_in_place_threshold: float = Field(default=45.0, ge=1.0, le=180.0)
     pivot_angle_threshold: float = Field(default=135.0, ge=90.0, le=180.0)
     landing_soft_velocity: float = Field(default=4.0, ge=0.0)
@@ -39,6 +49,12 @@ class Settings(BaseSettings):
     gravity: float = Field(default=9.81, gt=0.0)
     max_fall_speed: float = Field(default=50.0, gt=0.0)
     max_walkable_slope: float = Field(default=50.0, gt=0.0, le=89.0)
+    ground_probe_radius: float = Field(default=0.06, gt=0.0)
+    ground_probe_depth: float = Field(default=0.4, gt=0.0)
+    ground_probe_start_offset: float = Field(default=0.12, ge=0.0)
+    ground_snap_distance: float = Field(default=0.35, ge=0.0)
+    ground_grace_distance: float = Field(default=0.12, ge=0.0)
+    ground_grace_ticks: int = Field(default=2, ge=0)
     fall_damage_start_distance: float = Field(default=5.0, ge=0.0)
     fall_damage_per_meter: float = Field(default=15.0, ge=0.0)
     max_health: float = Field(default=100.0, gt=0.0)
@@ -47,6 +63,8 @@ class Settings(BaseSettings):
     projectile_range: float = Field(default=60.0, gt=0.0)
     projectile_damage: float = Field(default=34.0, gt=0.0)
     attack_cooldown_seconds: float = Field(default=0.75, gt=0.0)
+    aim_origin_height: float = Field(default=0.55, ge=0.0)
+    weapon_muzzle_height: float = Field(default=0.2, ge=0.0)
     jump_cooldown_seconds: float = Field(default=0.25, ge=0.0)
     character_radius: float = Field(default=0.45, gt=0.0)
     character_cylinder_height: float = Field(default=0.9, gt=0.0)
@@ -60,6 +78,14 @@ class Settings(BaseSettings):
             raise ValueError("walk_speed, run_speed, and sprint_speed must be ordered")
         if self.landing_soft_velocity >= self.landing_heavy_velocity:
             raise ValueError("landing_soft_velocity must be below landing_heavy_velocity")
+        for name in (
+            "walk_acceleration_curve",
+            "run_acceleration_curve",
+            "sprint_acceleration_curve",
+            "braking_curve",
+            "turn_speed_curve",
+        ):
+            validate_response_curve(name, getattr(self, name))
         return self
 
     @property

@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "arena_half_extent": 25.0,
+  "wall_height": 3.0,
+  "wall_thickness": 0.75,
+  "boxes": [
+    {
+      "name": "cover-center",
+      "center": [0.0, 0.9, 0.0],
+      "half_extents": [1.1, 0.9, 1.1]
+    }
+  ],
+  "ramps": [
+    {
+      "name": "walkable-ramp",
+      "center": [8.0, 0.95, -4.0],
+      "half_extents": [2.0, 0.15, 2.0],
+      "pitch_degrees": -20.0
+    }
+  ],
+  "staircase": {
+    "step_count": 24,
+    "step_rise": 0.3,
+    "step_spacing": 0.5,
+    "step_start_z": 5.0,
+    "step_half_depth": 0.4,
+    "step_half_width": 1.75,
+    "platform_center": [0.0, 7.0, 18.0],
+    "platform_half_extents": [4.0, 0.2, 2.5]
+  }
+}

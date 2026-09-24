@@ -1,0 +1,42 @@
+{
+  "dt": 0.016666666666666666,
+  "phase_ticks": 149,
+  "durations_seconds": [10, 30, 60],
+  "tolerance": 0.0002,
+  "segments": [
+    { "move_x": 0, "move_z": 1, "requested_gait": "sprint", "view_yaw": 0, "rotation_mode": "orient_to_movement" },
+    { "move_x": 1, "move_z": 0, "requested_gait": "walk", "view_yaw": 45, "rotation_mode": "strafe" },
+    { "move_x": 0, "move_z": -1, "requested_gait": "run", "view_yaw": 0, "rotation_mode": "orient_to_movement" },
+    { "move_x": -0.7, "move_z": 0.7, "requested_gait": "run", "view_yaw": 90, "rotation_mode": "orient_to_movement" },
+    { "move_x": 0, "move_z": 0, "requested_gait": "run", "view_yaw": -90, "rotation_mode": "aim" },
+    { "move_x": -1, "move_z": 0, "requested_gait": "walk", "view_yaw": 45, "rotation_mode": "orient_to_movement" },
+    { "move_x": 0, "move_z": 1, "requested_gait": "sprint", "view_yaw": 179, "rotation_mode": "strafe" },
+    { "move_x": 0, "move_z": 1, "requested_gait": "run", "view_yaw": -179, "rotation_mode": "strafe" }
+  ],
+  "expected": {
+    "10": {
+      "position": [10.714232258759946, 8.866995584980065],
+      "velocity": [1.12167771106309, 1.12167771106309],
+      "acceleration": [-23.07586262373524, -23.07586262373524],
+      "yaw": 40.999999999999886,
+      "yaw_rate": -96,
+      "actual_gait": "walk"
+    },
+    "30": {
+      "position": [18.038910435587713, -6.1449914800036245],
+      "velocity": [0, 0],
+      "acceleration": [0, 0],
+      "yaw": 13.799999999999955,
+      "yaw_rate": -288,
+      "actual_gait": "idle"
+    },
+    "60": {
+      "position": [21.880401742232028, -43.22458925974652],
+      "velocity": [0, 6.5],
+      "acceleration": [0, 0],
+      "yaw": -72.13832048895273,
+      "yaw_rate": 356.5453369898092,
+      "actual_gait": "sprint"
+    }
+  }
+}

@@ -11,6 +11,7 @@ from aster_game.infrastructure.metrics import RuntimeMetrics
 from aster_game.network.messages import (
     CLIENT_MESSAGE_ADAPTER,
     AttackMessage,
+    CollisionWorldProfile,
     HelloMessage,
     InputMessage,
     JoinedMessage,
@@ -107,8 +108,8 @@ async def handle_websocket(
             _enqueue_error(session, "HELLO_REQUIRED", "The first message must be hello")
             session.request_close(1002, "hello required")
             return
-        if hello.protocol_version != 2:
-            _enqueue_error(session, "UNSUPPORTED_PROTOCOL", "Supported protocol version is 2")
+        if hello.protocol_version != 6:
+            _enqueue_error(session, "UNSUPPORTED_PROTOCOL", "Supported protocol version is 6")
             session.request_close(1002, "unsupported protocol")
             return
         session.protocol_version = hello.protocol_version
@@ -125,11 +126,19 @@ async def handle_websocket(
                     ground_acceleration=settings.ground_acceleration,
                     braking_deceleration=settings.braking_deceleration,
                     ground_friction=settings.ground_friction,
+                    ground_directional_friction=settings.ground_directional_friction,
+                    turning_deceleration=settings.turning_deceleration,
+                    pivot_braking_multiplier=settings.pivot_braking_multiplier,
                     air_acceleration=settings.air_acceleration,
                     air_max_speed=settings.air_max_speed,
                     max_rotation_speed=settings.max_rotation_speed,
                     rotation_acceleration=settings.rotation_acceleration,
                     rotation_deceleration=settings.rotation_deceleration,
+                    walk_acceleration_curve=settings.walk_acceleration_curve,
+                    run_acceleration_curve=settings.run_acceleration_curve,
+                    sprint_acceleration_curve=settings.sprint_acceleration_curve,
+                    braking_curve=settings.braking_curve,
+                    turn_speed_curve=settings.turn_speed_curve,
                     turn_in_place_threshold=settings.turn_in_place_threshold,
                     pivot_angle_threshold=settings.pivot_angle_threshold,
                     jump_speed=settings.jump_speed,
@@ -140,7 +149,18 @@ async def handle_websocket(
                     landing_soft_velocity=settings.landing_soft_velocity,
                     landing_heavy_velocity=settings.landing_heavy_velocity,
                     landing_recovery_seconds=settings.landing_recovery_seconds,
+                    max_walkable_slope=settings.max_walkable_slope,
+                    ground_probe_radius=settings.ground_probe_radius,
+                    ground_probe_depth=settings.ground_probe_depth,
+                    ground_probe_start_offset=settings.ground_probe_start_offset,
+                    ground_snap_distance=settings.ground_snap_distance,
+                    ground_grace_distance=settings.ground_grace_distance,
+                    ground_grace_ticks=settings.ground_grace_ticks,
+                    character_step_height=settings.character_step_height,
+                    character_radius=settings.character_radius,
+                    character_cylinder_height=settings.character_cylinder_height,
                 ),
+                collision_world=CollisionWorldProfile.model_validate(rooms.collision_profile),
             ).model_dump(mode="json")
         )
 
@@ -217,7 +237,7 @@ async def handle_websocket(
                     move_x=message.move_x,
                     move_z=message.move_z,
                     jump=message.jump,
-                    sprint=message.sprint,
+                    requested_gait=message.requested_gait,
                     view_yaw=message.view_yaw,
                     view_pitch=message.view_pitch,
                     rotation_mode=message.rotation_mode.value,

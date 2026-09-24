@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from math import ceil, cos, radians, sin
+from math import ceil, cos, radians, sin, sqrt
 from typing import TYPE_CHECKING
 
 from panda3d.core import Vec3
 
+from aster_game.game.aim_ray import AimRay
 from aster_game.game.components import Projectile
 from aster_game.game.events import DamageRequest, DamageType, ResolvedDamage
 from aster_game.game.movement.state import ActionLayer, LifeState, MovementMode
@@ -26,17 +27,36 @@ class AttackSystem:
             if world.tick_id < character.attack_ready_tick:
                 world.publish("attack_rejected", entity_id=entity_id, reason="COOLDOWN")
                 continue
-            yaw = radians(character.movement.character_yaw)
-            direction = (sin(yaw), 0.0, cos(yaw))
+            movement = character.movement
+            aim_ray = AimRay.from_view(
+                character.transform.position,
+                movement.view_yaw,
+                movement.view_pitch,
+                world.settings.projectile_range,
+                world.settings.aim_origin_height,
+            )
+            aim_hit = world.physics.raycast(
+                aim_ray.origin,
+                aim_ray.end,
+                ignore_node_name=character.physics.controller.getName(),
+            )
+            aim_point = aim_hit.position if aim_hit is not None else aim_ray.end
             muzzle_distance = (
                 world.settings.character_radius + world.settings.projectile_radius + 0.18
             )
             position = character.transform.position
+            facing_yaw = radians(movement.character_yaw)
             origin = (
-                position[0] + direction[0] * muzzle_distance,
-                position[1] + 0.2,
-                position[2] + direction[2] * muzzle_distance,
+                position[0] + sin(facing_yaw) * muzzle_distance,
+                position[1] + world.settings.weapon_muzzle_height,
+                position[2] + cos(facing_yaw) * muzzle_distance,
             )
+            toward_aim = tuple(aim_point[axis] - origin[axis] for axis in range(3))
+            aim_distance = sqrt(sum(value * value for value in toward_aim))
+            if aim_distance <= 1e-6:
+                world.publish("attack_rejected", entity_id=entity_id, reason="AIM_POINT_TOO_CLOSE")
+                continue
+            direction = tuple(value / aim_distance for value in toward_aim)
             projectile = Projectile(
                 projectile_id=world.next_projectile_id,
                 owner_entity_id=entity_id,
@@ -53,6 +73,7 @@ class AttackSystem:
                 entity_id=entity_id,
                 projectile_id=projectile.projectile_id,
                 position=origin,
+                aim_direction=direction,
             )
         world.attack_requests.clear()
 

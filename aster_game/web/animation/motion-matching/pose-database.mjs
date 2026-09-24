@@ -1,0 +1,91 @@
+import { Pose } from "../pose.mjs";
+import { flattenPoseFeatureVector } from "./pose-features.mjs";
+
+function featureVector(candidate) {
+  const vector = candidate.features?.vector ?? candidate.featureVector;
+  if (!Array.isArray(vector) || vector.length === 0 || !vector.every(Number.isFinite)) {
+    throw new TypeError("pose database candidates require finite feature vectors");
+  }
+  return [...vector];
+}
+
+function freezeFeatures(features) {
+  const vector = featureVector({ features });
+  const canonical = flattenPoseFeatureVector(features);
+  if (canonical.length !== vector.length || canonical.some((value, index) => value !== vector[index])) {
+    throw new RangeError("pose database feature vector must match its structured features");
+  }
+  const fieldNames = [
+    "rootVelocity", "facing", "pelvisPosition", "pelvisVelocity",
+    "leftFootPosition", "rightFootPosition", "leftFootVelocity", "rightFootVelocity",
+  ];
+  const frozen = {};
+  for (const name of fieldNames) {
+    const value = features[name];
+    if (!Array.isArray(value) || !value.every(Number.isFinite)) {
+      throw new TypeError(`pose database feature '${name}' must be a finite vector`);
+    }
+    frozen[name] = Object.freeze([...value]);
+  }
+  if (!Array.isArray(features.trajectory)) {
+    throw new TypeError("pose database trajectory features must be an array");
+  }
+  frozen.trajectory = Object.freeze(features.trajectory.map((sample) => {
+    if (!sample || !Array.isArray(sample.position) || !sample.position.every(Number.isFinite) ||
+        !Array.isArray(sample.facing) || !sample.facing.every(Number.isFinite) ||
+        !Array.isArray(sample.velocity) || !sample.velocity.every(Number.isFinite)) {
+      throw new TypeError("pose database trajectory samples must contain finite vectors");
+    }
+    return Object.freeze({
+      position: Object.freeze([...sample.position]),
+      facing: Object.freeze([...sample.facing]),
+      velocity: Object.freeze([...sample.velocity]),
+    });
+  }));
+  frozen.vector = Object.freeze(vector);
+  return Object.freeze(frozen);
+}
+
+export class PoseDatabase {
+  constructor(candidates = []) {
+    if (!Array.isArray(candidates)) throw new TypeError("pose database candidates must be an array");
+    this.candidates = [];
+    this.ids = new Set();
+    this.featureLength = null;
+    this.skeleton = null;
+    for (const candidate of candidates) this.add(candidate);
+  }
+
+  add(candidate) {
+    if (!candidate || typeof candidate.id !== "string" || candidate.id.length === 0 ||
+        typeof candidate.clipName !== "string" || candidate.clipName.length === 0 ||
+        !Number.isFinite(candidate.timeSeconds) || candidate.timeSeconds < 0 ||
+        !(candidate.pose instanceof Pose)) {
+      throw new TypeError("pose database entry requires id, clip name, and finite clip time");
+    }
+    if (this.ids.has(candidate.id)) throw new RangeError(`duplicate pose database id '${candidate.id}'`);
+    if (this.skeleton !== null && candidate.pose.skeleton !== this.skeleton) {
+      throw new TypeError("pose database entries must use one skeleton instance");
+    }
+    const features = freezeFeatures(candidate.features);
+    const vector = features.vector;
+    if (this.featureLength !== null && vector.length !== this.featureLength) {
+      throw new RangeError("pose database entries must have equal feature vector lengths");
+    }
+    this.featureLength ??= vector.length;
+    this.skeleton ??= candidate.pose.skeleton;
+    const stored = Object.freeze({
+      ...candidate,
+      features,
+      featureVector: vector,
+      metadata: Object.freeze({ ...(candidate.metadata ?? {}) }),
+    });
+    this.ids.add(candidate.id);
+    this.candidates.push(stored);
+    return stored;
+  }
+
+  size() {
+    return this.candidates.length;
+  }
+}
