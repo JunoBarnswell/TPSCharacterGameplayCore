@@ -17,6 +17,14 @@ python -m pip install -e .
 python -m aster_game.app
 ```
 
+## Verify
+
+```powershell
+uv sync --python 3.13 --group dev
+uv run --locked pytest -q
+uv run --locked ruff check .
+```
+
 Health and in-memory server metrics are available at `/healthz` and `/metrics`. WebSocket clients
 connect to `/ws`, send `hello` with protocol version `1`, then `join_game`. Omitting `room_id` joins
 an available room or creates one. Explicit room IDs only join an existing room.
