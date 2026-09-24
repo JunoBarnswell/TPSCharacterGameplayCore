@@ -15,7 +15,9 @@ import {
 import {
   PredictionHistory,
   RemoteSnapshotBuffer,
-  VisualSmoothing,
+  VisualTransformSmoothing,
+  AdaptiveInterpolationDelay,
+  ServerClockEstimator,
 } from "../aster_game/web/motion/network-motion.mjs";
 import {
   createMotionFrame,
@@ -318,25 +320,89 @@ test("owner prediction restores an ACK and replays only remaining input history"
   assert.equal(history.metrics.large_correction_count, 1, JSON.stringify(history.metrics));
 });
 
-test("visual correction eases small errors and snaps large corrections", () => {
-  const smoothing = new VisualSmoothing(0.12, 3);
-  smoothing.correct([10, 0, 0], [9, 0, 0]);
-  const first = smoothing.render([9, 0, 0], 0);
-  const settled = smoothing.render([9, 0, 0], 0.12);
-  assert.deepEqual(first, [10, 0, 0]);
-  assert.ok(settled[0] > 9 && settled[0] < 10);
-  smoothing.correct([20, 0, 0], [9, 0, 0]);
-  assert.deepEqual(smoothing.render([9, 0, 0], 0), [9, 0, 0]);
+test("visual transform smoothing eases position and yaw while large corrections snap", () => {
+  const smoothing = new VisualTransformSmoothing({ durationSeconds: 0.12, snapDistance: 3 });
+  smoothing.correct(
+    { position: [10, 0, 0], character_yaw: -179 },
+    { position: [9, 0, 0], character_yaw: 179 },
+  );
+  const first = smoothing.render({ position: [9, 0, 0], character_yaw: 179 }, 0);
+  const settled = smoothing.render({ position: [9, 0, 0], character_yaw: 179 }, 0.12);
+  assert.deepEqual(first, { position: [10, 0, 0], character_yaw: -179 });
+  assert.ok(settled.position[0] > 9 && settled.position[0] < 10);
+  assert.ok(Math.abs(settled.character_yaw) > 179);
+  smoothing.correct(
+    { position: [20, 0, 0], character_yaw: 0 },
+    { position: [9, 0, 0], character_yaw: 0 },
+  );
+  assert.deepEqual(smoothing.render({ position: [9, 0, 0], character_yaw: 0 }, 0), {
+    position: [9, 0, 0],
+    character_yaw: 0,
+  });
+  assert.equal(smoothing.lastCorrection, "snap");
 });
 
-test("remote snapshots interpolate with velocity and cap extrapolation", () => {
-  const buffer = new RemoteSnapshotBuffer();
+test("visual transform smoothing supports linear and explicit snap modes", () => {
+  const linear = new VisualTransformSmoothing({ durationSeconds: 0.2, snapDistance: 3, mode: "linear" });
+  linear.correct({ position: [1, 0, 0], character_yaw: 90 }, { position: [0, 0, 0], character_yaw: 0 });
+  assert.equal(linear.render({ position: [0, 0, 0], character_yaw: 0 }, 0.1).position[0], 0.5);
+  const snap = new VisualTransformSmoothing({ mode: "snap" });
+  snap.correct({ position: [1, 0, 0], character_yaw: 90 }, { position: [0, 0, 0], character_yaw: 0 });
+  assert.deepEqual(snap.render({ position: [0, 0, 0], character_yaw: 0 }, 0), {
+    position: [0, 0, 0],
+    character_yaw: 0,
+  });
+});
+
+test("remote snapshots interpolate with bounded tangents and cap extrapolation", () => {
+  const buffer = new RemoteSnapshotBuffer(32, 10, { maxVisualVelocity: 16 });
   buffer.push({ tick: 0, position: [0, 0, 0], velocity: [60, 0, 0], character_yaw: 0 });
   buffer.push({ tick: 2, position: [2, 0, 0], velocity: [60, 0, 0], character_yaw: 10 });
   assert.deepEqual(buffer.sample(1, 60).position, [1, 0, 0]);
-  assert.deepEqual(buffer.sample(100, 60, 0.1).position, [8, 0, 0]);
+  assert.deepEqual(buffer.sample(100, 60, 0.1).position, [3.6, 0, 0]);
   buffer.push({ tick: 3, position: [30, 0, 0], velocity: [0, 0, 0], character_yaw: 0 });
   assert.equal(buffer.samples.length, 1);
+  assert.equal(buffer.lastPushTeleported, true);
+});
+
+test("remote Hermite interpolation prevents stopping and pivot overshoot", () => {
+  const buffer = new RemoteSnapshotBuffer(32, 10, { maxVisualVelocity: 20 });
+  buffer.push({ tick: 0, position: [0, 0, 0], velocity: [0, 0, 20], character_yaw: 0, yaw_rate: 720 });
+  buffer.push({ tick: 60, position: [1, 0, 0], velocity: [0, 0, -20], character_yaw: 90, yaw_rate: 720 });
+  const sample = buffer.sample(30, 60);
+  assert.ok(sample.position[0] >= 0 && sample.position[0] <= 1);
+  assert.equal(sample.position[2], 0);
+  assert.ok(sample.character_yaw >= 0 && sample.character_yaw <= 90);
+  const stopped = new RemoteSnapshotBuffer();
+  stopped.push({ tick: 0, position: [3, 0, 0], velocity: [10, 0, 0], character_yaw: 0 });
+  stopped.push({ tick: 2, position: [3, 0, 0], velocity: [0, 0, 0], character_yaw: 0 });
+  assert.deepEqual(stopped.sample(1, 60).position, [3, 0, 0]);
+});
+
+test("server clock estimates current server tick from arrival and RTT", () => {
+  const clock = new ServerClockEstimator(60);
+  clock.observe(600, 10000, 100);
+  assert.equal(clock.estimateTick(10000), 603);
+  clock.observe(606, 10100, 100);
+  assert.ok(Math.abs(clock.estimateTick(10100) - 609) < 0.01);
+  assert.equal(clock.observationCount, 2);
+  assert.equal(clock.observe(606, 100100, 100), false);
+});
+
+test("adaptive interpolation delay follows snapshot cadence, jitter, and RTT variance", () => {
+  const delay = new AdaptiveInterpolationDelay({ minMs: 30, maxMs: 220, initialMs: 50 });
+  delay.observe(0, 0, 60, 40);
+  delay.observe(3, 50, 60, 40);
+  const steady = delay.delayMs;
+  delay.observe(6, 100, 60, 40);
+  assert.ok(delay.delayMs >= steady);
+  delay.observe(9, 190, 60, 120);
+  assert.ok(delay.delayMs > steady);
+  for (let index = 12; index < 90; index += 3) delay.observe(index, index * 1000 / 60, 60, 40);
+  assert.ok(delay.delayMs <= 220);
+  assert.ok(delay.delayMs >= 30);
+  assert.ok(delay.arrivalJitterMs > 0);
+  assert.ok(delay.rttVarianceMs > 0);
 });
 
 test("collision prediction stops at cover and preserves tangential wall motion", () => {

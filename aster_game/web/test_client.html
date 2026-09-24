@@ -303,7 +303,7 @@
               <div class="stat-cell"><span>PREDICTED · AUTH · CORRECTION</span><strong id="correctionValue">—</strong></div>
               <div class="stat-cell"><span>POS · ROT · VEL ERROR · RECONCILIATIONS</span><strong id="predictionErrorValue">—</strong></div>
               <div class="stat-cell"><span>OWNER SMOOTHING · SNAP DISTANCE</span><strong id="ownerSmoothingValue">—</strong></div>
-              <div class="stat-cell"><span>REMOTE DELAY · EXTRAPOLATION · TELEPORT</span><strong id="remoteMotionValue">—</strong></div>
+              <div class="stat-cell"><span>ADAPTIVE DELAY · EXTRAPOLATION · BUFFER / CLOCK</span><strong id="remoteMotionValue">—</strong></div>
               <div class="stat-cell"><span>SIM HZ · SNAP HZ · RENDER FPS</span><strong id="ratesValue">—</strong></div>
               <div class="stat-cell"><span>PING · JITTER · PENDING INPUTS</span><strong id="networkStatsValue">—</strong></div>
               <div class="stat-cell"><span>ANIMATION BLEND · WARP ANGLE</span><strong id="animationValue">—</strong></div>
@@ -342,7 +342,14 @@
   <script type="module">
     "use strict";
 
-    import { NetworkSimulator, PredictionHistory, RemoteSnapshotBuffer, VisualSmoothing } from "/web/motion/network-motion.mjs";
+    import {
+      AdaptiveInterpolationDelay,
+      NetworkSimulator,
+      PredictionHistory,
+      RemoteSnapshotBuffer,
+      ServerClockEstimator,
+      VisualTransformSmoothing,
+    } from "/web/motion/network-motion.mjs";
     import { CollisionWorld } from "/web/motion/collision-world.mjs";
     import { createMotionFrame, MotionHistory, PoseHistory, predictTrajectory } from "/web/motion/motion-frame.mjs";
     import { evaluateAnimationGraph } from "/web/animation/animation-graph.mjs";
@@ -358,9 +365,12 @@
       ownerCorrectionSmoothingSeconds: 0.12,
       ownerSnapDistance: 3.0,
       largeCorrectionThreshold: 0.5,
-      remoteInterpolationDelaySeconds: 0.1,
+      remoteInterpolationMinMs: 50,
+      remoteInterpolationMaxMs: 300,
+      remoteInterpolationInitialMs: 100,
       maxRemoteExtrapolationSeconds: 0.1,
       remoteTeleportThreshold: 10.0,
+      remoteMaxVisualVelocity: 16.0,
       maxRemoteSnapshots: 32,
     });
     const keysForMovement = new Set([
@@ -388,17 +398,25 @@
       networkMotionSettings.predictionHistoryLimit,
       networkMotionSettings.largeCorrectionThreshold,
     );
-    const smoother = new VisualSmoothing(
-      networkMotionSettings.ownerCorrectionSmoothingSeconds,
-      networkMotionSettings.ownerSnapDistance,
-    );
+    const smoother = new VisualTransformSmoothing({
+      durationSeconds: networkMotionSettings.ownerCorrectionSmoothingSeconds,
+      snapDistance: networkMotionSettings.ownerSnapDistance,
+      mode: "exponential",
+    });
+    const serverClock = new ServerClockEstimator(tickRate);
+    const adaptiveInterpolationDelay = new AdaptiveInterpolationDelay({
+      minMs: networkMotionSettings.remoteInterpolationMinMs,
+      maxMs: networkMotionSettings.remoteInterpolationMaxMs,
+      initialMs: networkMotionSettings.remoteInterpolationInitialMs,
+    });
     const networkSimulator = new NetworkSimulator();
     const remoteBuffers = new Map();
     const motionHistory = new MotionHistory(180);
     const poseHistory = new PoseHistory(180);
     const inertializer = new Map();
     const pendingPings = new Map();
-    let renderPosition = null;
+    let visualTransform = null;
+    let remoteRenderTick = 0;
     let currentMotionFrame = null;
     let currentTrajectory = [];
     let currentAnimation = null;
@@ -475,6 +493,9 @@
       viewPitch = 0;
       rotationMode = $("rotationModeSelect").value;
       tickRate = 60;
+      serverClock.setTickRate(tickRate);
+      serverClock.reset();
+      adaptiveInterpolationDelay.reset();
       snapshotIntervalTicks = 3;
       snapshotRate = 0;
       $("serverRateValue").textContent = "—";
@@ -485,7 +506,9 @@
       prediction.state = null;
       prediction.inputs = [];
       remoteBuffers.clear();
-      renderPosition = null;
+      visualTransform = null;
+      smoother.reset();
+      remoteRenderTick = 0;
       lastAcknowledgedInput = -1;
       lastAckDelayMs = null;
       pendingPings.clear();
@@ -622,6 +645,9 @@
           return;
         }
         tickRate = message.tick_rate;
+        serverClock.setTickRate(tickRate);
+        serverClock.reset();
+        adaptiveInterpolationDelay.reset();
         snapshotIntervalTicks = message.snapshot_interval_ticks;
         $("serverRateValue").textContent = String(tickRate);
         $("snapshotRateValue").textContent = (tickRate / snapshotIntervalTicks).toFixed(1);
@@ -659,6 +685,8 @@
           $("snapshotRateValue").textContent = snapshotRate.toFixed(1);
         }
         latestTick = message.tick;
+        serverClock.observe(message.tick, receivedAt, lastPingMs);
+        adaptiveInterpolationDelay.observe(message.tick, receivedAt, tickRate, lastPingMs);
         $("tickValue").textContent = latestTick;
         players.clear();
         projectiles.clear();
@@ -668,6 +696,7 @@
             const buffer = remoteBuffers.get(player.player_id) || new RemoteSnapshotBuffer(
               networkMotionSettings.maxRemoteSnapshots,
               networkMotionSettings.remoteTeleportThreshold,
+              { maxVisualVelocity: networkMotionSettings.remoteMaxVisualVelocity },
             );
             buffer.push({ ...player, tick: message.tick });
             remoteBuffers.set(player.player_id, buffer);
@@ -676,7 +705,10 @@
         for (const projectile of message.projectiles || []) projectiles.set(projectile.projectile_id, projectile);
         authoritativeSelf = players.get(playerId) || null;
         if (authoritativeSelf && movementTuning) {
-          const previousVisual = renderPosition || prediction.state?.position || authoritativeSelf.position;
+          const previousVisual = visualTransform || {
+            position: prediction.state?.position || authoritativeSelf.position,
+            character_yaw: prediction.state?.character_yaw ?? authoritativeSelf.character_yaw,
+          };
           const acknowledged = prediction.inputs.find(({ input }) => input.sequence === authoritativeSelf.last_processed_input);
           if (acknowledged) lastAckDelayMs = Math.max(0, performance.now() - acknowledged.sentAt);
           const authoritativeMotion = { ...authoritativeSelf, server_tick: message.tick, simulation_tick: message.tick };
@@ -689,7 +721,10 @@
               collisionWorld,
             )
             : (prediction.reset(authoritativeMotion), prediction.state);
-          smoother.correct(previousVisual, corrected.position);
+          smoother.correct(previousVisual, {
+            position: corrected.position,
+            character_yaw: corrected.character_yaw,
+          });
           lastAcknowledgedInput = Math.max(lastAcknowledgedInput, authoritativeSelf.last_processed_input);
         }
         renderSnapshot();
@@ -852,7 +887,7 @@
       $("ownerSmoothingValue").textContent =
         `${Math.round(networkMotionSettings.ownerCorrectionSmoothingSeconds * 1000)} ms · ${networkMotionSettings.ownerSnapDistance.toFixed(1)} m`;
       $("remoteMotionValue").textContent =
-        `${Math.round(networkMotionSettings.remoteInterpolationDelaySeconds * 1000)} / ${Math.round(networkMotionSettings.maxRemoteExtrapolationSeconds * 1000)} ms · ${networkMotionSettings.remoteTeleportThreshold.toFixed(1)} m`;
+        `${Math.round(adaptiveInterpolationDelay.delayMs)} ms · ${Math.round(networkMotionSettings.maxRemoteExtrapolationSeconds * 1000)} ms · ${Math.max(0, ...[...remoteBuffers.values()].map((buffer) => buffer.samples.length))} snaps · ${Math.round(serverClock.phaseErrorTicks * 1000 / tickRate)} ms phase`;
       $("ratesValue").textContent = `${tickRate} · ${snapshotRate.toFixed(1)} · ${$("clientFpsValue").textContent}`;
       $("networkStatsValue").textContent = `${lastPingMs === null ? "—" : `${Math.round(lastPingMs)} ms`} · ${pingJitterMs === null ? "—" : `${Math.round(pingJitterMs)} ms`} · ${prediction.inputs.length}`;
       $("animationValue").textContent = currentAnimation
@@ -938,13 +973,12 @@
 
       for (const player of players.values()) {
         const self = player.player_id === playerId;
-        const renderTick = latestTick - tickRate * networkMotionSettings.remoteInterpolationDelaySeconds;
         const remote = !self ? remoteBuffers.get(player.player_id)?.sample(
-          renderTick,
+          remoteRenderTick,
           tickRate,
           networkMotionSettings.maxRemoteExtrapolationSeconds,
         ) : null;
-        const position = self ? renderPosition || predictPosition() || player.position : remote?.position || player.position;
+        const position = self ? visualTransform?.position || predictPosition() || player.position : remote?.position || player.position;
         const [x, y] = point(position[0], position[2]);
         if (self) {
           const [serverX, serverY] = point(player.position[0], player.position[2]);
@@ -965,7 +999,7 @@
         context.textAlign = "center";
         context.fillText((player.player_name || "Player").slice(0, 12), x, y - 12);
         if (self) {
-          const angle = (Number(player.character_yaw) * Math.PI) / 180;
+          const angle = (Number(visualTransform?.character_yaw ?? player.character_yaw) * Math.PI) / 180;
           context.beginPath(); context.moveTo(x, y); context.lineTo(x + Math.sin(angle) * 14, y - Math.cos(angle) * 14);
           context.strokeStyle = "#ddfff4"; context.lineWidth = 2; context.stroke();
         }
@@ -1018,8 +1052,12 @@
       const motionState = prediction.state || authoritativeSelf;
       if (motionState) {
         const simulationPosition = motionState.position || [0, 0, 0];
-        renderPosition = smoother.render(simulationPosition, dt);
-        currentMotionFrame = createMotionFrame({ ...motionState, position: renderPosition }, latestTick, dt);
+        const simulationTransform = {
+          position: simulationPosition,
+          character_yaw: Number(motionState.character_yaw ?? 0),
+        };
+        visualTransform = smoother.render(simulationTransform, dt);
+        currentMotionFrame = createMotionFrame({ ...motionState, ...visualTransform }, latestTick, dt);
         motionHistory.push(currentMotionFrame);
         poseHistory.push(currentMotionFrame);
         currentTrajectory = predictTrajectory(currentMotionFrame);
@@ -1029,15 +1067,17 @@
           $("animationValue").textContent = `${selectedBlend} ${currentAnimation.locomotion[selectedBlend].toFixed(2)} · ${currentAnimation.orientationWarp.toFixed(1)}°`;
         }
         if (authoritativeSelf) {
-          const predicted = renderPosition;
+          const predicted = visualTransform.position;
           const error = Math.hypot(...predicted.map((value, index) => value - authoritativeSelf.position[index]));
           $("correctionValue").textContent = `${formatVector([predicted[0], predicted[2]])} · ${formatVector([authoritativeSelf.position[0], authoritativeSelf.position[2]])} · ${error.toFixed(2)} m`;
         }
         $("networkStatsValue").textContent = `${lastPingMs === null ? "—" : `${Math.round(lastPingMs)} ms`} · ${pingJitterMs === null ? "—" : `${Math.round(pingJitterMs)} ms`} · ${prediction.inputs.length}`;
       } else {
-        renderPosition = null;
+        visualTransform = null;
         currentTrajectory = [];
       }
+      remoteRenderTick = serverClock.estimateTick(now) -
+        adaptiveInterpolationDelay.delayMs * tickRate / 1000;
       drawArena();
       if (frameWindowStartedAt === null) frameWindowStartedAt = now;
       renderedFrameCount++;
