@@ -16,6 +16,14 @@ class DamageRequest:
     amount: float
     hit_position: tuple[float, float, float] | None = None
     hit_direction: tuple[float, float, float] | None = None
+    hit_source_position: tuple[float, float, float] | None = None
+    hit_region: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedDamage:
+    request: DamageRequest
+    applied_amount: float
 
 
 @dataclass(frozen=True, slots=True)

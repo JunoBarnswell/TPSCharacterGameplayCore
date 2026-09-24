@@ -2,6 +2,8 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
+from aster_game.game.movement.state import RotationMode
+
 
 class WireModel(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
@@ -29,11 +31,14 @@ class JoinGameMessage(WireModel):
 class InputMessage(WireModel):
     type: Literal["input"]
     sequence: int = Field(ge=0, le=9_007_199_254_740_991)
+    client_tick: int = Field(ge=0, le=9_007_199_254_740_991)
     move_x: float = Field(default=0.0, ge=-1.0, le=1.0, allow_inf_nan=False)
     move_z: float = Field(default=0.0, ge=-1.0, le=1.0, allow_inf_nan=False)
     jump: bool = False
     sprint: bool = False
-    yaw: float = Field(default=0.0, ge=-180.0, le=180.0, allow_inf_nan=False)
+    view_yaw: float = Field(default=0.0, ge=-180.0, le=180.0, allow_inf_nan=False)
+    view_pitch: float = Field(default=0.0, ge=-89.0, le=89.0, allow_inf_nan=False)
+    rotation_mode: RotationMode = RotationMode.ORIENT_TO_MOVEMENT
 
 
 class AttackMessage(WireModel):
@@ -61,13 +66,32 @@ class MovementTuning(WireModel):
     run_speed: float = Field(gt=0.0)
     sprint_speed: float = Field(gt=0.0)
     air_control: float = Field(ge=0.0, le=1.0)
+    ground_acceleration: float = Field(gt=0.0)
+    braking_deceleration: float = Field(ge=0.0)
+    ground_friction: float = Field(ge=0.0)
+    air_acceleration: float = Field(ge=0.0)
+    air_max_speed: float = Field(gt=0.0)
+    max_rotation_speed: float = Field(gt=0.0)
+    rotation_acceleration: float = Field(gt=0.0)
+    rotation_deceleration: float = Field(gt=0.0)
+    turn_in_place_threshold: float = Field(gt=0.0, le=180.0)
+    pivot_angle_threshold: float = Field(ge=90.0, le=180.0)
+    jump_speed: float = Field(gt=0.0)
+    gravity: float = Field(gt=0.0)
+    max_fall_speed: float = Field(gt=0.0)
+    apex_velocity_threshold: float = Field(ge=0.0)
+    jump_cooldown_seconds: float = Field(ge=0.0)
+    landing_soft_velocity: float = Field(ge=0.0)
+    landing_heavy_velocity: float = Field(gt=0.0)
+    landing_recovery_seconds: float = Field(ge=0.0)
 
 
 class WelcomeMessage(WireModel):
     type: Literal["welcome"] = "welcome"
     session_id: str
-    protocol_version: int = 1
+    protocol_version: int = 2
     tick_rate: int
+    snapshot_interval_ticks: int
     movement_tuning: MovementTuning
 
 
@@ -96,12 +120,47 @@ class PlayerSnapshot(WireModel):
     player_name: str
     position: tuple[float, float, float]
     velocity: tuple[float, float, float]
-    yaw: float
-    state: str
+    acceleration: tuple[float, float, float]
+    desired_velocity: tuple[float, float, float]
+    desired_move_direction: tuple[float, float, float]
+    current_speed: float
+    horizontal_speed: float
+    vertical_speed: float
+    grounded: bool
+    floor_normal: tuple[float, float, float]
+    floor_distance: float | None
+    walkable_floor: bool
+    slope_angle: float
+    ground_contact_point: tuple[float, float, float] | None
+    ground_entity: str | None
+    movement_mode: str
+    gait: str
+    character_yaw: float
+    desired_facing_yaw: float
+    angular_velocity: float
+    yaw_rate: float
+    view_yaw: float
+    view_pitch: float
+    aim_yaw: float
+    aim_pitch: float
+    rotation_mode: str
+    locomotion_phase: str
+    phase_until_tick: int
+    landing_recovery_until_tick: int
+    turn_angle: float
+    landing_impact_velocity: float
+    jump_held: bool
+    action_layer: str
+    life_state: str
+    hit_direction: tuple[float, float, float] | None
+    hit_region: str | None
+    hit_strength: float
+    hit_source_position: tuple[float, float, float] | None
     health: float
     max_health: float
-    alive: bool
     last_processed_input: int
+    last_client_tick: int
+    jump_available_tick: int
 
 
 class ProjectileSnapshot(WireModel):

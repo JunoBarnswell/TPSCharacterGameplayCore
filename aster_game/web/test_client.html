@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#11141b">
   <link rel="icon" href="data:,">
-  <title>Aster TPS Gameplay Test</title>
+  <title>Aster Character Motion Lab</title>
   <style>
     :root {
       color-scheme: dark;
@@ -155,6 +155,11 @@
     .stat-cell { padding: 9px 10px; border: 1px solid #2c3340; border-radius: 8px; background: #161a22; }
     .stat-cell span { display: block; color: var(--muted); font-size: 10px; }
     .stat-cell strong { display: block; overflow: hidden; margin-top: 3px; font: 600 11px ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+    .network-controls { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 5px 12px; }
+    .network-controls label { color: var(--muted); font-size: 11px; }
+    .network-controls output { color: var(--text); font: 11px ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .network-controls input[type="range"] { grid-column: span 2; width: 100%; margin: 0 0 5px; accent-color: var(--mint); }
+    .mode-select { min-height: 32px; padding: 0 9px; border: 1px solid var(--line); border-radius: 7px; background: #202531; color: var(--text); }
     .roster { display: grid; gap: 6px; padding: 0 14px 14px; }
     .player-row { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 8px 9px; border: 1px solid #2b3240; border-radius: 8px; background: #171b24; }
     .player-row .marker { width: 8px; height: 8px; border-radius: 100%; background: var(--red); }
@@ -196,15 +201,16 @@
         <div class="brand-mark" aria-hidden="true">A/</div>
         <div>
           <div class="eyebrow">Authoritative simulation lab</div>
-          <h1>Aster TPS Gameplay Test</h1>
-          <p class="subtitle">Connect a browser session and inspect server-owned gameplay state.</p>
+          <h1>Aster Character Motion Lab</h1>
+          <p class="subtitle">Character Motion Lab · authoritative motion, prediction and animation semantics.</p>
         </div>
       </div>
       <div class="header-pills">
         <div id="connectionStatus" class="status-pill" data-state="disconnected" role="status" aria-live="polite">
           <span class="status-dot" aria-hidden="true"></span><span id="connectionText">Disconnected</span>
         </div>
-        <div class="tick-pill">SERVER <span id="serverRateValue">—</span> HZ</div>
+        <div class="tick-pill">SIM <span id="serverRateValue">—</span> HZ</div>
+        <div class="tick-pill">SNAP <span id="snapshotRateValue">—</span> HZ</div>
         <div id="clientFpsPill" class="tick-pill">CLIENT <span id="clientFpsValue">—</span> FPS</div>
         <div class="tick-pill">TICK <span id="tickValue">—</span></div>
       </div>
@@ -232,7 +238,7 @@
     <div class="layout">
       <section class="panel stage" aria-labelledby="arenaTitle">
         <div class="section-title">
-          <h2 id="arenaTitle">Arena · server snapshot</h2>
+          <h2 id="arenaTitle">Character Motion Lab</h2>
           <span id="roomLabel" class="micro-label">NOT IN ROOM</span>
         </div>
         <div class="canvas-wrap">
@@ -250,9 +256,15 @@
         <div class="control-bar">
           <div class="keyboard-help">
             <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move · <kbd>Shift</kbd> sprint · <kbd>Space</kbd> jump<br>
-            <kbd>←</kbd><kbd>→</kbd> / <kbd>Q</kbd><kbd>E</kbd> turn · <kbd>F</kbd> attack · <kbd>R</kbd> respawn
+            <kbd>←</kbd><kbd>→</kbd> / <kbd>Q</kbd><kbd>E</kbd> turn · <kbd>↑</kbd><kbd>↓</kbd> aim pitch · <kbd>F</kbd> attack · <kbd>R</kbd> respawn
           </div>
           <div class="button-row">
+            <label class="micro-label" for="rotationModeSelect">ROTATION</label>
+            <select id="rotationModeSelect" class="mode-select" aria-label="Character rotation mode">
+              <option value="orient_to_movement">Orient</option>
+              <option value="strafe">Strafe</option>
+              <option value="aim">Aim</option>
+            </select>
             <button id="pingButton" type="button" disabled>Ping</button>
             <button id="attackButton" type="button" disabled>Attack · F</button>
             <button id="respawnButton" class="danger" type="button" disabled>Respawn · R</button>
@@ -276,9 +288,38 @@
               <div class="stat-cell"><span>SERVER POS · X / Y / Z</span><strong id="positionValue">—</strong></div>
               <div class="stat-cell"><span>LOCAL PREDICTION · X / Z</span><strong id="predictedValue">—</strong></div>
               <div class="stat-cell"><span>SERVER VELOCITY · X / Y / Z</span><strong id="velocityValue">—</strong></div>
-              <div class="stat-cell"><span>LOCAL YAW</span><strong id="yawValue">—</strong></div>
+              <div class="stat-cell"><span>VIEW YAW</span><strong id="yawValue">—</strong></div>
               <div class="stat-cell"><span>INPUT ACK · DELAY</span><strong id="ackValue">—</strong></div>
+              <div class="stat-cell"><span>MOVEMENT MODE · GAIT</span><strong id="movementValue">—</strong></div>
+              <div class="stat-cell"><span>LOCOMOTION · ACTION · LIFE</span><strong id="phaseValue">—</strong></div>
+              <div class="stat-cell"><span>ROTATION MODE</span><strong id="rotationModeValue">—</strong></div>
+              <div class="stat-cell"><span>ACCELERATION · X / Y / Z</span><strong id="accelValue">—</strong></div>
+              <div class="stat-cell"><span>DESIRED VELOCITY · X / Z</span><strong id="desiredMovementValue">—</strong></div>
+              <div class="stat-cell"><span>GROUNDED · FLOOR NORMAL · SLOPE</span><strong id="floorValue">—</strong></div>
+              <div class="stat-cell"><span>CHARACTER YAW · DESIRED YAW</span><strong id="facingValue">—</strong></div>
+              <div class="stat-cell"><span>VIEW YAW · VIEW PITCH</span><strong id="viewValue">—</strong></div>
+              <div class="stat-cell"><span>AIM YAW · AIM PITCH</span><strong id="aimValue">—</strong></div>
+              <div class="stat-cell"><span>YAW RATE</span><strong id="yawRateValue">—</strong></div>
+              <div class="stat-cell"><span>PREDICTED · AUTH · CORRECTION</span><strong id="correctionValue">—</strong></div>
+              <div class="stat-cell"><span>OWNER SMOOTHING · SNAP DISTANCE</span><strong id="ownerSmoothingValue">—</strong></div>
+              <div class="stat-cell"><span>REMOTE DELAY · EXTRAPOLATION · TELEPORT</span><strong id="remoteMotionValue">—</strong></div>
+              <div class="stat-cell"><span>SIM HZ · SNAP HZ · RENDER FPS</span><strong id="ratesValue">—</strong></div>
+              <div class="stat-cell"><span>PING · JITTER · PENDING INPUTS</span><strong id="networkStatsValue">—</strong></div>
+              <div class="stat-cell"><span>ANIMATION BLEND · WARP ANGLE</span><strong id="animationValue">—</strong></div>
+              <div class="stat-cell"><span>ROOT OFFSET · SKELETON DATA</span><strong id="rootOffsetValue">Unavailable · 2D Lab</strong></div>
             </div>
+          </div>
+        </section>
+
+        <section class="panel network-panel">
+          <div class="section-title"><h2>Network simulation</h2><span class="micro-label">APPLICATION-LEVEL</span></div>
+          <div class="stats-body network-controls">
+            <label for="latencyRange">Latency <output id="latencyOutput">0 ms</output></label>
+            <input id="latencyRange" type="range" min="0" max="250" step="10" value="0">
+            <label for="jitterRange">Jitter <output id="jitterOutput">0 ms</output></label>
+            <input id="jitterRange" type="range" min="0" max="100" step="5" value="0">
+            <label for="lossRange">Packet loss <output id="lossOutput">0%</output></label>
+            <input id="lossRange" type="range" min="0" max="5" step="1" value="0">
           </div>
         </section>
 
@@ -294,11 +335,15 @@
         </section>
       </aside>
     </div>
-    <p class="footnote">Local X/Z movement is predicted with server-provided tuning and reconciled on snapshots. Collision and vertical physics, health, hits, and life state remain server authoritative.</p>
+    <p class="footnote">The server owns collision, life and authoritative movement. Prediction/replay, visual smoothing, remote interpolation and animation blend semantics run in the browser; this canvas lab has no production skeleton or IK backend.</p>
   </main>
 
-  <script>
+  <script type="module">
     "use strict";
+
+    import { NetworkSimulator, PredictionHistory, RemoteSnapshotBuffer, VisualSmoothing } from "/web/motion/network-motion.mjs";
+    import { createMotionFrame, MotionHistory, PoseHistory, predictTrajectory } from "/web/motion/motion-frame.mjs";
+    import { evaluateAnimationGraph } from "/web/animation/animation-graph.mjs";
 
     const $ = (id) => document.getElementById(id);
     const canvas = $("arena");
@@ -306,28 +351,62 @@
     const pressed = new Set();
     const players = new Map();
     const projectiles = new Map();
+    const networkMotionSettings = Object.freeze({
+      predictionHistoryLimit: 256,
+      ownerCorrectionSmoothingSeconds: 0.12,
+      ownerSnapDistance: 3.0,
+      remoteInterpolationDelaySeconds: 0.1,
+      maxRemoteExtrapolationSeconds: 0.1,
+      remoteTeleportThreshold: 10.0,
+      maxRemoteSnapshots: 32,
+    });
     const keysForMovement = new Set([
       "KeyW", "KeyA", "KeyS", "KeyD", "ShiftLeft", "ShiftRight", "Space",
       "ArrowLeft", "ArrowRight", "KeyQ", "KeyE",
+      "ArrowUp", "ArrowDown",
     ]);
     let socket = null;
     let playerId = null;
     let entityId = null;
     let roomId = null;
     let sequence = 0;
-    let yaw = 0;
+    let clientTick = 0;
+    let viewYaw = 0;
+    let viewPitch = 0;
+    let rotationMode = "orient_to_movement";
     let latestTick = 0;
     let tickRate = 60;
+    let snapshotIntervalTicks = 3;
+    let snapshotRate = 0;
     let movementTuning = null;
     let authoritativeSelf = null;
-    let pendingInputs = [];
+    const prediction = new PredictionHistory(networkMotionSettings.predictionHistoryLimit);
+    const smoother = new VisualSmoothing(
+      networkMotionSettings.ownerCorrectionSmoothingSeconds,
+      networkMotionSettings.ownerSnapDistance,
+    );
+    const networkSimulator = new NetworkSimulator();
+    const remoteBuffers = new Map();
+    const motionHistory = new MotionHistory(180);
+    const poseHistory = new PoseHistory(180);
+    const inertializer = new Map();
+    const pendingPings = new Map();
+    let renderPosition = null;
+    let currentMotionFrame = null;
+    let currentTrajectory = [];
+    let currentAnimation = null;
     let lastAcknowledgedInput = -1;
     let lastAckDelayMs = null;
+    let lastPingMs = null;
+    let pingJitterMs = null;
+    let previousPingMs = null;
+    let snapshotRateSamples = [];
     let lastInputSentAt = 0;
     let frameWindowStartedAt = null;
     let renderedFrameCount = 0;
     let inputTimer = null;
     let pingTimer = null;
+    let previousRenderAt = null;
     const turnRateDegreesPerSecond = 120;
 
     const defaultSocketUrl = () => {
@@ -363,6 +442,9 @@
 
     function send(message) {
       if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+      if (playerId && ["input", "ping", "attack", "respawn"].includes(message.type)) {
+        return networkSimulator.send(socket, message);
+      }
       socket.send(JSON.stringify(message));
       return true;
     }
@@ -380,14 +462,29 @@
       entityId = null;
       roomId = null;
       sequence = 0;
-      yaw = 0;
+      clientTick = 0;
+      latestTick = 0;
+      viewYaw = 0;
+      viewPitch = 0;
+      rotationMode = $("rotationModeSelect").value;
       tickRate = 60;
+      snapshotIntervalTicks = 3;
+      snapshotRate = 0;
       $("serverRateValue").textContent = "—";
+      $("snapshotRateValue").textContent = "—";
       movementTuning = null;
       authoritativeSelf = null;
-      pendingInputs = [];
+      prediction.state = null;
+      prediction.inputs = [];
+      remoteBuffers.clear();
+      renderPosition = null;
       lastAcknowledgedInput = -1;
       lastAckDelayMs = null;
+      pendingPings.clear();
+      lastPingMs = null;
+      pingJitterMs = null;
+      previousPingMs = null;
+      snapshotRateSamples = [];
       lastInputSentAt = 0;
       setConnection("connecting", "Connecting…");
       addEvent(`Connecting to ${url}`);
@@ -402,7 +499,7 @@
 
       socket.addEventListener("open", () => {
         setConnection("connected", "Connected · joining");
-        send({ type: "hello", protocol_version: 1 });
+        send({ type: "hello", protocol_version: 2 });
       });
       socket.addEventListener("message", (event) => {
         let message;
@@ -412,7 +509,13 @@
           addEvent("Server sent invalid JSON.", "error");
           return;
         }
-        handleMessage(message);
+        if (playerId && message.type === "snapshot") {
+          networkSimulator.receive(handleMessage, message);
+        } else if (playerId && message.type === "pong") {
+          networkSimulator.receive(handleMessage, message);
+        } else {
+          handleMessage(message);
+        }
       });
       socket.addEventListener("error", () => {
         setConnection("error", "Connection error");
@@ -425,7 +528,9 @@
         entityId = null;
         roomId = null;
         authoritativeSelf = null;
-        pendingInputs = [];
+        prediction.state = null;
+        prediction.inputs = [];
+        remoteBuffers.clear();
         players.clear();
         projectiles.clear();
         $("roomLabel").textContent = "NOT IN ROOM";
@@ -437,20 +542,40 @@
     function handleMessage(message) {
       if (message.type === "welcome") {
         const tuning = message.movement_tuning;
-        const validTuning = tuning &&
-          [tuning.walk_speed, tuning.run_speed, tuning.sprint_speed, tuning.air_control].every(Number.isFinite) &&
+        const requiredTuning = [
+          "walk_speed", "run_speed", "sprint_speed", "air_control", "ground_acceleration",
+          "braking_deceleration", "ground_friction", "air_acceleration", "air_max_speed",
+          "max_rotation_speed", "rotation_acceleration", "rotation_deceleration",
+          "turn_in_place_threshold", "pivot_angle_threshold", "jump_speed", "gravity",
+          "max_fall_speed", "apex_velocity_threshold", "jump_cooldown_seconds",
+          "landing_soft_velocity", "landing_heavy_velocity", "landing_recovery_seconds",
+        ];
+        const validTuning = tuning && requiredTuning.every((key) =>
+          Object.hasOwn(tuning, key) && Number.isFinite(tuning[key])) &&
           tuning.walk_speed > 0 && tuning.run_speed >= tuning.walk_speed &&
-          tuning.sprint_speed >= tuning.run_speed && tuning.air_control >= 0 && tuning.air_control <= 1;
-        if (!Number.isInteger(message.tick_rate) || message.tick_rate < 60 || message.tick_rate > 120 || !validTuning) {
+          tuning.sprint_speed >= tuning.run_speed && tuning.air_control >= 0 && tuning.air_control <= 1 &&
+          tuning.ground_acceleration > 0 && tuning.air_acceleration >= 0 &&
+          tuning.braking_deceleration >= 0 && tuning.ground_friction >= 0 &&
+          tuning.pivot_angle_threshold >= 90 && tuning.pivot_angle_threshold <= 180 &&
+          tuning.apex_velocity_threshold >= 0 && tuning.air_max_speed > 0 &&
+          tuning.max_rotation_speed > 0 && tuning.rotation_acceleration > 0 &&
+          tuning.rotation_deceleration > 0 && tuning.turn_in_place_threshold > 0 &&
+          tuning.jump_speed > 0 && tuning.gravity > 0 && tuning.max_fall_speed > 0 &&
+          tuning.jump_cooldown_seconds >= 0 && tuning.landing_soft_velocity >= 0 &&
+          tuning.landing_heavy_velocity > tuning.landing_soft_velocity &&
+          tuning.landing_recovery_seconds >= 0;
+        if (message.protocol_version !== 2 || !Number.isInteger(message.tick_rate) || message.tick_rate < 60 || message.tick_rate > 120 || !Number.isInteger(message.snapshot_interval_ticks) || message.snapshot_interval_ticks < 1 || !validTuning) {
           setConnection("error", "Server must support 60 Hz");
           addEvent("Server must provide 60–120 Hz tick_rate and valid movement_tuning.", "error");
           socket?.close(1002, "unsupported simulation rate or missing movement tuning");
           return;
         }
         tickRate = message.tick_rate;
+        snapshotIntervalTicks = message.snapshot_interval_ticks;
         $("serverRateValue").textContent = String(tickRate);
+        $("snapshotRateValue").textContent = (tickRate / snapshotIntervalTicks).toFixed(1);
         movementTuning = message.movement_tuning;
-        addEvent(`Protocol ${message.protocol_version} · ${message.tick_rate} Hz`);
+        addEvent(`Protocol ${message.protocol_version} · simulation ${message.tick_rate} Hz · snapshots ${(tickRate / snapshotIntervalTicks).toFixed(1)} Hz`);
         const room = $("roomId").value.trim();
         send({
           type: "join_game",
@@ -471,23 +596,60 @@
         return;
       }
       if (message.type === "snapshot") {
+        if (message.tick <= latestTick) return;
+        const receivedAt = performance.now();
+        snapshotRateSamples.push({ at: receivedAt });
+        snapshotRateSamples = snapshotRateSamples.filter((sample) => receivedAt - sample.at <= 1500);
+        const oldestSnapshot = snapshotRateSamples[0];
+        if (oldestSnapshot && receivedAt - oldestSnapshot.at >= 250) {
+          snapshotRate = (snapshotRateSamples.length - 1) * 1000 /
+            (receivedAt - oldestSnapshot.at);
+          $("snapshotRateValue").textContent = snapshotRate.toFixed(1);
+        }
         latestTick = message.tick;
         $("tickValue").textContent = latestTick;
         players.clear();
         projectiles.clear();
-        for (const player of message.players || []) players.set(player.player_id, player);
+        for (const player of message.players || []) {
+          players.set(player.player_id, player);
+          if (player.player_id !== playerId) {
+            const buffer = remoteBuffers.get(player.player_id) || new RemoteSnapshotBuffer(
+              networkMotionSettings.maxRemoteSnapshots,
+              networkMotionSettings.remoteTeleportThreshold,
+            );
+            buffer.push({ ...player, tick: message.tick });
+            remoteBuffers.set(player.player_id, buffer);
+          }
+        }
         for (const projectile of message.projectiles || []) projectiles.set(projectile.projectile_id, projectile);
         authoritativeSelf = players.get(playerId) || null;
-        if (authoritativeSelf) acknowledgeInputs(authoritativeSelf.last_processed_input);
+        if (authoritativeSelf && movementTuning) {
+          const previousVisual = renderPosition || prediction.state?.position || authoritativeSelf.position;
+          const acknowledged = prediction.inputs.find(({ input }) => input.sequence === authoritativeSelf.last_processed_input);
+          if (acknowledged) lastAckDelayMs = Math.max(0, performance.now() - acknowledged.sentAt);
+          const authoritativeMotion = { ...authoritativeSelf, server_tick: message.tick, simulation_tick: message.tick };
+          const corrected = prediction.state
+            ? prediction.reconcile(authoritativeMotion, authoritativeSelf.last_processed_input, movementTuning, 1 / tickRate)
+            : (prediction.reset(authoritativeMotion), prediction.state);
+          smoother.correct(previousVisual, corrected.position);
+          lastAcknowledgedInput = Math.max(lastAcknowledgedInput, authoritativeSelf.last_processed_input);
+        }
         renderSnapshot();
         return;
       }
       if (message.type === "pong") {
-        addEvent(`Pong · nonce ${message.nonce ?? "—"}`);
+        const sentAt = pendingPings.get(message.nonce);
+        if (sentAt !== undefined) {
+          lastPingMs = performance.now() - sentAt;
+          if (previousPingMs !== null) pingJitterMs = Math.abs(lastPingMs - previousPingMs);
+          previousPingMs = lastPingMs;
+          pendingPings.delete(message.nonce);
+        }
+        addEvent(`Pong · ${lastPingMs === null ? "—" : `${Math.round(lastPingMs)} ms`}`);
         return;
       }
       const isError = message.type === "error" || message.type?.endsWith("_rejected");
-      const isCombat = ["hit", "damage", "death", "fall_impact", "respawn"].includes(message.type);
+      const isCombat = ["hit", "hit_reaction", "damage", "death", "fall_impact", "landing_started", "respawn"].includes(message.type);
       addEvent(message, isError ? "error" : isCombat ? "combat" : "");
       if (message.type === "error") setConnection("error", message.code || "Server error");
     }
@@ -495,7 +657,7 @@
     function startTimers() {
       stopTimers();
       inputTimer = window.setInterval(sendInput, 1000 / tickRate);
-      pingTimer = window.setInterval(() => send({ type: "ping", nonce: Date.now() }), 10000);
+      pingTimer = window.setInterval(sendPing, 5000);
       sendInput();
     }
 
@@ -508,62 +670,63 @@
 
     function sendInput() {
       if (!playerId) return;
+      if (authoritativeSelf?.life_state === "dead") return;
       const moveX = Number(pressed.has("KeyD")) - Number(pressed.has("KeyA"));
       const moveZ = Number(pressed.has("KeyW")) - Number(pressed.has("KeyS"));
       const turn = Number(pressed.has("ArrowRight") || pressed.has("KeyE")) -
         Number(pressed.has("ArrowLeft") || pressed.has("KeyQ"));
+      const pitchTurn = Number(pressed.has("ArrowUp")) - Number(pressed.has("ArrowDown"));
       const now = performance.now();
       const elapsed = lastInputSentAt > 0 ? Math.min((now - lastInputSentAt) / 1000, 1 / tickRate) : 1 / tickRate;
-      yaw = ((yaw + turn * turnRateDegreesPerSecond * elapsed + 180) % 360 + 360) % 360 - 180;
+      viewYaw = ((viewYaw + turn * turnRateDegreesPerSecond * elapsed + 180) % 360 + 360) % 360 - 180;
+      viewPitch = Math.max(-89, Math.min(89, viewPitch + pitchTurn * turnRateDegreesPerSecond * elapsed));
       const input = {
         type: "input",
         sequence,
+        client_tick: clientTick++,
         move_x: moveX,
         move_z: moveZ,
         jump: pressed.has("Space"),
         sprint: pressed.has("ShiftLeft") || pressed.has("ShiftRight"),
-        yaw,
+        view_yaw: viewYaw,
+        view_pitch: viewPitch,
+        rotation_mode: rotationMode,
+        sentAt: now,
       };
-      if (!send(input)) return;
-      pendingInputs.push({ ...input, sentAt: now });
+      const wireInput = { ...input };
+      delete wireInput.sentAt;
+      if (!send(wireInput)) return;
+      if (authoritativeSelf && prediction.state && movementTuning) {
+        prediction.predict(input, movementTuning, 1 / tickRate);
+      }
       lastInputSentAt = now;
       sequence++;
       updatePredictedPosition();
     }
 
-    function acknowledgeInputs(acknowledgedSequence) {
-      if (!Number.isInteger(acknowledgedSequence) || acknowledgedSequence <= lastAcknowledgedInput) return;
-      const acknowledged = pendingInputs.find((input) => input.sequence === acknowledgedSequence);
-      if (acknowledged) lastAckDelayMs = Math.max(0, performance.now() - acknowledged.sentAt);
-      pendingInputs = pendingInputs.filter((input) => input.sequence > acknowledgedSequence);
-      lastAcknowledgedInput = acknowledgedSequence;
-    }
-
     function predictPosition() {
-      if (!authoritativeSelf) return null;
-      const position = [...authoritativeSelf.position];
-      if (!authoritativeSelf.alive || !movementTuning) return position;
-      const dt = 1 / tickRate;
-      for (const input of pendingInputs) {
-        const axisLength = Math.hypot(input.move_x, input.move_z);
-        const scale = axisLength > 1 ? 1 / axisLength : 1;
-        const moveX = input.move_x * scale;
-        const moveZ = input.move_z * scale;
-        const speed = input.sprint
-          ? movementTuning.sprint_speed
-          : axisLength > 0.72 ? movementTuning.run_speed : movementTuning.walk_speed;
-        const inAir = authoritativeSelf.state === "jump" || authoritativeSelf.state === "fall";
-        const control = inAir ? movementTuning.air_control : 1;
-        const angle = (Number(input.yaw) * Math.PI) / 180;
-        position[0] += speed * (moveX * Math.cos(angle) + moveZ * Math.sin(angle)) * control * dt;
-        position[2] += speed * (-moveX * Math.sin(angle) + moveZ * Math.cos(angle)) * control * dt;
-      }
-      return position;
+      return prediction.state?.position || authoritativeSelf?.position || null;
     }
 
     function updatePredictedPosition() {
       const position = predictPosition();
       $("predictedValue").textContent = position ? `${position[0].toFixed(2)} / ${position[2].toFixed(2)}` : "—";
+    }
+
+    function sendPing() {
+      const nonce = Date.now();
+      pendingPings.set(nonce, performance.now());
+      if (!send({ type: "ping", nonce })) pendingPings.delete(nonce);
+    }
+
+    function configureNetworkSimulation() {
+      const latencyMs = Number($("latencyRange").value);
+      const jitterMs = Number($("jitterRange").value);
+      const packetLoss = Number($("lossRange").value) / 100;
+      networkSimulator.configure({ latencyMs, jitterMs, packetLoss });
+      $("latencyOutput").value = `${latencyMs} ms`;
+      $("jitterOutput").value = `${jitterMs} ms`;
+      $("lossOutput").value = `${packetLoss * 100}%`;
     }
 
     function attack() {
@@ -596,8 +759,8 @@
       }
       if (!self) return;
       $("selfName").textContent = self.player_name || "Player";
-      $("stateChip").textContent = self.state.toUpperCase();
-      $("stateChip").dataset.state = self.state;
+      $("stateChip").textContent = self.life_state.toUpperCase();
+      $("stateChip").dataset.state = self.life_state;
       $("healthText").textContent = `${Math.ceil(self.health)} / ${Math.ceil(self.max_health)}`;
       const healthRatio = self.max_health > 0 ? Math.max(0, Math.min(1, self.health / self.max_health)) : 0;
       $("healthFill").style.width = `${healthRatio * 100}%`;
@@ -607,13 +770,39 @@
       $("positionValue").textContent = formatVector(self.position);
       updatePredictedPosition();
       $("velocityValue").textContent = formatVector(self.velocity);
-      $("yawValue").textContent = `${Number(yaw).toFixed(1)}°`;
+      $("yawValue").textContent = `${Number(viewYaw).toFixed(1)}°`;
       const ackDelay = lastAckDelayMs === null ? "—" : `${Math.round(lastAckDelayMs)} ms`;
       $("ackValue").textContent = `#${self.last_processed_input} · ${ackDelay}`;
+      $("movementValue").textContent = `${self.movement_mode.toUpperCase()} · ${self.gait.toUpperCase()}`;
+      $("phaseValue").textContent = `${self.locomotion_phase.toUpperCase()} · ${self.action_layer.toUpperCase()} · ${self.life_state.toUpperCase()}`;
+      $("rotationModeValue").textContent = self.rotation_mode.toUpperCase();
+      $("accelValue").textContent = formatVector(self.acceleration);
+      $("desiredMovementValue").textContent = `${formatVector([self.desired_velocity[0], self.desired_velocity[2]])} · ${Number(self.horizontal_speed).toFixed(2)} m/s`;
+      $("floorValue").textContent = `${self.grounded ? "YES" : "NO"} · ${formatVector(self.floor_normal)} · ${Number(self.slope_angle).toFixed(1)}° · ${self.floor_distance === null ? "—" : Number(self.floor_distance).toFixed(2)}m`;
+      $("facingValue").textContent = `${Number(self.character_yaw).toFixed(1)}° · ${Number(self.desired_facing_yaw).toFixed(1)}°`;
+      $("viewValue").textContent = `${Number(self.view_yaw).toFixed(1)}° · ${Number(self.view_pitch).toFixed(1)}°`;
+      $("aimValue").textContent = `${Number(self.aim_yaw).toFixed(1)}° · ${Number(self.aim_pitch).toFixed(1)}°`;
+      $("yawRateValue").textContent = `${Number(self.yaw_rate).toFixed(1)}°/s`;
+      const predicted = predictPosition() || self.position;
+      const correction = Math.hypot(...predicted.map((value, index) => value - self.position[index]));
+      $("correctionValue").textContent = `${formatVector([predicted[0], predicted[2]])} · ${formatVector([self.position[0], self.position[2]])} · ${correction.toFixed(2)} m`;
+      $("ownerSmoothingValue").textContent =
+        `${Math.round(networkMotionSettings.ownerCorrectionSmoothingSeconds * 1000)} ms · ${networkMotionSettings.ownerSnapDistance.toFixed(1)} m`;
+      $("remoteMotionValue").textContent =
+        `${Math.round(networkMotionSettings.remoteInterpolationDelaySeconds * 1000)} / ${Math.round(networkMotionSettings.maxRemoteExtrapolationSeconds * 1000)} ms · ${networkMotionSettings.remoteTeleportThreshold.toFixed(1)} m`;
+      $("ratesValue").textContent = `${tickRate} · ${snapshotRate.toFixed(1)} · ${$("clientFpsValue").textContent}`;
+      $("networkStatsValue").textContent = `${lastPingMs === null ? "—" : `${Math.round(lastPingMs)} ms`} · ${pingJitterMs === null ? "—" : `${Math.round(pingJitterMs)} ms`} · ${prediction.inputs.length}`;
+      $("animationValue").textContent = currentAnimation
+        ? `${bestBlend(currentAnimation.locomotion)} · ${currentAnimation.orientationWarp.toFixed(1)}°`
+        : "—";
     }
 
     function formatVector(vector) {
       return (vector || []).map((value) => Number(value).toFixed(2)).join(" / ");
+    }
+
+    function bestBlend(weights) {
+      return Object.entries(weights).sort((a, b) => b[1] - a[1])[0]?.[0] || "idle";
     }
 
     function resizeCanvas() {
@@ -667,9 +856,32 @@
         context.fillStyle = "#f5cc77"; context.fill();
       }
 
+      if (currentTrajectory.length > 0) {
+        context.setLineDash([3, 4]);
+        context.strokeStyle = "rgba(130, 170, 255, .65)";
+        context.beginPath();
+        currentTrajectory.forEach((sample, index) => {
+          const [tx, ty] = point(sample.position[0], sample.position[2]);
+          if (index === 0) context.moveTo(tx, ty); else context.lineTo(tx, ty);
+        });
+        context.stroke();
+        context.setLineDash([]);
+        for (const sample of currentTrajectory) {
+          const [tx, ty] = point(sample.position[0], sample.position[2]);
+          context.beginPath(); context.arc(tx, ty, 2.5, 0, Math.PI * 2);
+          context.fillStyle = "#82aaff"; context.fill();
+        }
+      }
+
       for (const player of players.values()) {
         const self = player.player_id === playerId;
-        const position = self ? predictPosition() || player.position : player.position;
+        const renderTick = latestTick - tickRate * networkMotionSettings.remoteInterpolationDelaySeconds;
+        const remote = !self ? remoteBuffers.get(player.player_id)?.sample(
+          renderTick,
+          tickRate,
+          networkMotionSettings.maxRemoteExtrapolationSeconds,
+        ) : null;
+        const position = self ? renderPosition || predictPosition() || player.position : remote?.position || player.position;
         const [x, y] = point(position[0], position[2]);
         if (self) {
           const [serverX, serverY] = point(player.position[0], player.position[2]);
@@ -680,7 +892,7 @@
           context.strokeStyle = "rgba(119, 224, 193, .45)"; context.lineWidth = 1; context.stroke();
         }
         context.beginPath(); context.arc(x, y, self ? 7 : 6, 0, Math.PI * 2);
-        context.fillStyle = self ? "#77e0c1" : player.alive ? "#ff8296" : "#697385";
+        context.fillStyle = self ? "#77e0c1" : player.life_state === "alive" ? "#ff8296" : "#697385";
         context.fill();
         context.lineWidth = self ? 2 : 1;
         context.strokeStyle = self ? "#d4fff1" : "#ffe0e5";
@@ -690,7 +902,7 @@
         context.textAlign = "center";
         context.fillText((player.player_name || "Player").slice(0, 12), x, y - 12);
         if (self) {
-          const angle = (Number(yaw) * Math.PI) / 180;
+          const angle = (Number(player.character_yaw) * Math.PI) / 180;
           context.beginPath(); context.moveTo(x, y); context.lineTo(x + Math.sin(angle) * 14, y - Math.cos(angle) * 14);
           context.strokeStyle = "#ddfff4"; context.lineWidth = 2; context.stroke();
         }
@@ -724,12 +936,45 @@
     $("disconnectButton").addEventListener("click", () => socket?.close(1000, "client disconnect"));
     $("attackButton").addEventListener("click", attack);
     $("respawnButton").addEventListener("click", respawn);
-    $("pingButton").addEventListener("click", () => send({ type: "ping", nonce: Date.now() }));
+    $("pingButton").addEventListener("click", sendPing);
     $("clearEvents").addEventListener("click", () => $("eventList").replaceChildren());
+    $("rotationModeSelect").addEventListener("change", () => {
+      rotationMode = $("rotationModeSelect").value;
+      sendInput();
+    });
+    for (const id of ["latencyRange", "jitterRange", "lossRange"]) {
+      $(id).addEventListener("input", configureNetworkSimulation);
+    }
     window.addEventListener("resize", resizeCanvas);
     new ResizeObserver(resizeCanvas).observe(canvas);
     resizeCanvas();
+    configureNetworkSimulation();
     function renderFrame(now) {
+      const dt = previousRenderAt === null ? 1 / 60 : Math.min(0.1, (now - previousRenderAt) / 1000);
+      previousRenderAt = now;
+      const motionState = prediction.state || authoritativeSelf;
+      if (motionState) {
+        const simulationPosition = motionState.position || [0, 0, 0];
+        renderPosition = smoother.render(simulationPosition, dt);
+        currentMotionFrame = createMotionFrame({ ...motionState, position: renderPosition }, latestTick, dt);
+        motionHistory.push(currentMotionFrame);
+        poseHistory.push(currentMotionFrame);
+        currentTrajectory = predictTrajectory(currentMotionFrame);
+        if (movementTuning) {
+          currentAnimation = evaluateAnimationGraph(currentMotionFrame, movementTuning, inertializer, dt);
+          const selectedBlend = bestBlend(currentAnimation.locomotion);
+          $("animationValue").textContent = `${selectedBlend} ${currentAnimation.locomotion[selectedBlend].toFixed(2)} · ${currentAnimation.orientationWarp.toFixed(1)}°`;
+        }
+        if (authoritativeSelf) {
+          const predicted = renderPosition;
+          const error = Math.hypot(...predicted.map((value, index) => value - authoritativeSelf.position[index]));
+          $("correctionValue").textContent = `${formatVector([predicted[0], predicted[2]])} · ${formatVector([authoritativeSelf.position[0], authoritativeSelf.position[2]])} · ${error.toFixed(2)} m`;
+        }
+        $("networkStatsValue").textContent = `${lastPingMs === null ? "—" : `${Math.round(lastPingMs)} ms`} · ${pingJitterMs === null ? "—" : `${Math.round(pingJitterMs)} ms`} · ${prediction.inputs.length}`;
+      } else {
+        renderPosition = null;
+        currentTrajectory = [];
+      }
       drawArena();
       if (frameWindowStartedAt === null) frameWindowStartedAt = now;
       renderedFrameCount++;
@@ -737,6 +982,7 @@
       if (elapsed >= 1000) {
         const fps = Math.round(renderedFrameCount * 1000 / elapsed);
         $("clientFpsValue").textContent = String(fps);
+        $("ratesValue").textContent = `${tickRate} · ${snapshotRate.toFixed(1)} · ${fps}`;
         $("clientFpsPill").dataset.performance = fps >= 60 ? "ready" : "under";
         renderedFrameCount = 0;
         frameWindowStartedAt = now;

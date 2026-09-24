@@ -1,8 +1,10 @@
-# Aster Gameplay Server
+# Aster Character Motion Engine
 
-P0 authoritative gameplay server for a browser TPS. Python owns movement, physics, combat, health,
-death, respawn, and snapshots. The repository includes a small browser test client for exercising
-the networked gameplay loop; it is not the production 3D client.
+Authoritative Python gameplay server and browser Character Motion Lab for a Web TPS. Python owns
+movement, physics, combat, health, death, respawn, and snapshots. Browser motion modules implement
+matching owner prediction, input replay, visual correction smoothing, remote interpolation, and
+animation blend semantics. The canvas lab is not a production 3D client and does not play skeletal
+animations.
 
 ## Requirements
 
@@ -24,46 +26,55 @@ python -m aster_game.app
 uv sync --python 3.13 --group dev
 uv run --locked pytest -q
 uv run --locked ruff check .
+node --test tests/test_web_motion.mjs
 ```
 
 Health and in-memory server metrics are available at `/healthz` and `/metrics`. WebSocket clients
-connect to `/ws`, send `hello` with protocol version `1`, then `join_game`. Omitting `room_id` joins
+connect to `/ws`, send `hello` with protocol version `2`, then `join_game`. Omitting `room_id` joins
 an available room or creates one. Explicit room IDs only join an existing room.
 
-Open `http://127.0.0.1:8000/` for the browser gameplay test page. It connects to the local
-WebSocket by default, joins a room, predicts local horizontal motion between authoritative
-snapshots, and displays both server and client positions. The page sends input at the negotiated
-server tick rate and renders through `requestAnimationFrame`; its FPS and server Hz are visible in
-the header. Use `WASD` to move, `Shift` to sprint, `Space` to jump, arrow keys or `Q`/`E` to turn,
-`F` to fire, and `R` to request a respawn. The arena is a 2D test view, not a production 3D client.
+Open `http://127.0.0.1:8000/` for the Character Motion Lab. It predicts using the same acceleration,
+braking, air steering, and rotation equations, restores authoritative snapshots, replays unacknowledged
+input history, and smooths only the visual correction. Remote players render from a tick-buffered
+Hermite interpolation path. Simulation runs at 60 Hz by default; replication is independently
+configurable and defaults to 20 Hz (`snapshot_interval_ticks: 3`); browser rendering uses
+`requestAnimationFrame`. The page reports movement channels, floor sample, aim/facing, ACK/correction,
+simulation/snapshot/render rates, ping/jitter, and pending input count. Use the Network Simulation
+sliders to add application-level latency, jitter, and packet loss. Use `WASD`, `Shift`, `Space`,
+left/right or `Q`/`E` to turn the view, up/down to change view pitch, `F` to fire, and `R` to respawn.
+The arena remains a 2D test view without a production skeleton runtime.
 
 The protocol is JSON. Client messages are `hello`, `join_game`, `input`, `attack`, `respawn`, and
 `ping`. Server messages include `welcome`, `joined`, `snapshot`, gameplay events, `pong`, and
 `error`. The detailed wire models live in `aster_game/network/messages.py`.
 
-Example client flow:
+Protocol v2 example client flow:
 
 ```json
-{"type":"hello","protocol_version":1}
+{"type":"hello","protocol_version":2}
 {"type":"join_game","player_name":"Player One"}
-{"type":"input","sequence":1,"move_x":0,"move_z":1,"jump":false,"sprint":false,"yaw":0}
+{"type":"input","sequence":1,"client_tick":1,"move_x":0,"move_z":1,"jump":false,"sprint":false,"view_yaw":0,"view_pitch":0,"rotation_mode":"orient_to_movement"}
 {"type":"attack"}
 ```
 
-`input` contains intent only; position and velocity are server-owned. `yaw` is degrees, movement
-axes are clamped to `[-1, 1]`, and sequences must increase. Repeated movement input is coalesced per
-tick while jump press edges are retained. The server acknowledges the latest applied sequence in
-each player's snapshot. Messages larger than 16 KiB are rejected by the WebSocket server.
+`input` contains intent only; position, velocity, and character facing are server-owned. `view_yaw`
+and `view_pitch` are degrees; movement axes are clamped to `[-1, 1]`, and sequences must increase.
+Repeated movement input is coalesced per tick while jump press edges are retained. The server
+acknowledges the latest applied sequence in each player's snapshot. Protocol v2 intentionally removes
+the old client-authored `yaw` and mutually exclusive character `state` fields; no v1 alias is kept.
+Messages larger than 16 KiB are rejected by the WebSocket server.
 
-Gameplay events include `state_changed`, `jump_started`, `fall_started`, `fall_impact`, `landing`,
-`attack_fired`, `attack_rejected`, `hit`, `projectile_impact`, `damage`, `health_changed`, `death`,
-`respawn`, and `command_rejected`.
+Gameplay events include `motion_state_changed`, `jump_started`, `rising`, `apex_reached`,
+`fall_started`, `fall_impact`, `landing_started`, `landed`, `attack_fired`, `attack_rejected`, `hit`,
+`hit_reaction`, `projectile_impact`, `damage`, `health_changed`, `death`, `respawn`, and
+`command_rejected`.
 
 ## World and simulation
 
 - One asyncio task and one independent Bullet world per room.
 - Fixed simulation tick supports 60–120 Hz; the default is 60 Hz and physics advances using that timestep.
-- Full authoritative snapshots are sent at the simulation rate by default (60 Hz).
+- Replication frequency is set by `snapshot_interval_ticks`; default 3 means 20 Hz at the default 60 Hz simulation.
+- Client render rate is independent of server simulation and snapshot rates.
 - Y is the vertical axis; character transforms use world coordinates in meters.
 - The arena has a floor, perimeter walls, central cover, and a stepped upper platform that makes
   threshold fall damage reachable during play.
@@ -73,3 +84,13 @@ Gameplay events include `state_changed`, `jump_started`, `fall_started`, `fall_i
 
 All settings can be overridden with the `ASTER_GAME_` prefix, for example
 `ASTER_GAME_TICK_RATE=60` or `ASTER_GAME_PORT=8000`. Tick rates below 60 Hz are rejected.
+
+## Motion architecture
+
+See [`docs/character-motion-runtime.md`](docs/character-motion-runtime.md) for motion-state channels,
+solver order, protocol-v2 ownership, prediction/reconciliation, interpolation, and runtime boundaries.
+
+The current browser runtime provides a two-dimensional blend-space weight model, additive aim and hit
+layers, inertialized blend weights, semantic orientation-warp angle, trajectory samples, and bounded
+motion/pose history. There is no production skeleton/pose backend. Real Foot IK, Root Motion playback,
+Motion Warping, Pose Search, and Motion Matching remain future work.

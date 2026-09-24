@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from aster_game.app.config import Settings
 from aster_game.game.components import InputCommand
+from aster_game.game.events import DamageRequest, DamageType
+from aster_game.game.movement.state import LifeState
 from aster_game.game.world import GameWorld
 from aster_game.infrastructure.metrics import RuntimeMetrics
 
@@ -26,13 +28,15 @@ def test_input_sequence_is_authoritative_and_movement_is_speed_limited() -> None
         for sequence in range(1, 11):
             assert world.queue_input(
                 character.entity_id,
-                InputCommand(sequence, 0.0, 1.0, False, True, 0.0),
+                InputCommand(
+                    sequence, sequence, 0.0, 1.0, False, True, 0.0, 0.0, "orient_to_movement"
+                ),
             )
             world.tick(world.settings.fixed_dt)
 
         assert not world.queue_input(
             character.entity_id,
-            InputCommand(10, 0.0, 1.0, False, True, 0.0),
+            InputCommand(10, 10, 0.0, 1.0, False, True, 0.0, 0.0, "orient_to_movement"),
         )
         displacement = character.transform.position[2] - start[2]
         assert displacement > 0.0
@@ -49,10 +53,14 @@ def test_jump_enters_air_and_returns_to_ground() -> None:
         settle(world)
         ground_y = character.transform.position[1]
         assert character.movement.grounded
+        assert character.movement.walkable_floor
+        assert character.movement.ground_contact_point is not None
+        assert character.movement.ground_entity == "arena-floor"
+        assert character.movement.floor_normal[1] > 0.99
 
         assert world.queue_input(
             character.entity_id,
-            InputCommand(1, 0.0, 0.0, True, False, 0.0),
+            InputCommand(1, 1, 0.0, 0.0, True, False, 0.0, 0.0, "orient_to_movement"),
         )
         events = []
         highest_y = ground_y
@@ -64,7 +72,8 @@ def test_jump_enters_air_and_returns_to_ground() -> None:
         assert character.movement.grounded
         assert any(event.type == "jump_started" for event in events)
         assert any(event.type == "fall_started" for event in events)
-        assert any(event.type == "landing" for event in events)
+        assert any(event.type == "landing_started" for event in events)
+        assert any(event.type == "landed" for event in events)
     finally:
         world.close()
 
@@ -81,15 +90,41 @@ def test_fall_damage_uses_damage_pipeline_and_can_kill() -> None:
         events = []
         for _ in range(120):
             events.extend(world.tick(world.settings.fixed_dt))
-            if not character.health.alive:
+            if character.life_state is LifeState.DEAD:
                 break
 
         event_types = [event.type for event in events]
         assert "fall_impact" in event_types
         assert "damage" in event_types
         assert "death" in event_types
-        assert not character.health.alive
+        assert character.life_state is LifeState.DEAD
         assert character.health.current_health == 0.0
+    finally:
+        world.close()
+
+
+def test_same_tick_damage_is_capped_to_remaining_health() -> None:
+    world = make_world(max_health=50.0)
+    try:
+        character = world.add_player("player", "Player")
+        world.damage_requests.extend(
+            DamageRequest(
+                source_entity_id=None,
+                target_entity_id=character.entity_id,
+                damage_type=DamageType.ENVIRONMENT,
+                amount=40.0,
+            )
+            for _ in range(2)
+        )
+
+        events = world.tick(world.settings.fixed_dt)
+        damage_amounts = [event.data["amount"] for event in events if event.type == "damage"]
+
+        assert damage_amounts == [40.0, 10.0]
+        assert sum(damage_amounts) == 50.0
+        assert character.health.current_health == 0.0
+        assert character.life_state is LifeState.DEAD
+        assert sum(event.type == "death" for event in events) == 1
     finally:
         world.close()
 
@@ -118,24 +153,24 @@ def test_projectile_hit_death_and_respawn_restore_character_state() -> None:
         events = []
         for _ in range(30):
             events.extend(world.tick(world.settings.fixed_dt))
-            if not target.health.alive:
+            if target.life_state is LifeState.DEAD:
                 break
 
-        assert not target.health.alive
+        assert target.life_state is LifeState.DEAD
         assert target.health.current_health == 0.0
         assert any(event.type == "hit" for event in events)
         assert any(event.type == "damage" for event in events)
         assert any(event.type == "death" for event in events)
         assert not world.queue_input(
             target.entity_id,
-            InputCommand(1, 0.0, 1.0, False, True, 0.0),
+            InputCommand(1, 1, 0.0, 1.0, False, True, 0.0, 0.0, "orient_to_movement"),
         )
 
         assert world.queue_respawn(target.entity_id)
         respawn_events = world.tick(world.settings.fixed_dt)
-        assert target.health.alive
+        assert target.life_state is LifeState.ALIVE
         assert target.health.current_health == target.health.max_health
-        assert target.state.value != "dead"
+        assert target.movement.movement_mode.value != "disabled"
         assert target.movement.last_processed_input == -1
         assert any(event.type == "respawn" for event in respawn_events)
     finally:
