@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>阿芽的星灯之旅 · 横版关卡实验室</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, "Microsoft YaHei", sans-serif; }
+    * { box-sizing: border-box; }
+    body { min-width: 320px; margin: 0; background: #111b29; color: #e8f6f4; }
+    button { font: inherit; cursor: pointer; }
+    .shell { max-width: 1140px; margin: auto; padding: 24px 18px 36px; }
+    .header { display: flex; justify-content: space-between; align-items: end; gap: 20px; margin-bottom: 18px; }
+    .eyebrow { color: #75dbb9; font-size: 11px; font-weight: 800; letter-spacing: .14em; }
+    h1 { margin: 5px 0 3px; font-size: clamp(23px, 4vw, 37px); letter-spacing: -.04em; }
+    .subtitle, .note { color: #a7bec4; font-size: 13px; line-height: 1.65; }
+    .header a { color: #9debd1; text-decoration: none; white-space: nowrap; }
+    .board { overflow: hidden; border: 1px solid #486a68; border-radius: 16px; background: #253d51;
+      box-shadow: 0 24px 75px #0007; }
+    .hud { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; padding: 12px 18px;
+      background: #142333; font-size: 13px; font-weight: 700; }
+    .hud span { color: #ffe398; }
+    .stage { position: relative; }
+    canvas { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; background: #93d7dd; }
+    .message { position: absolute; inset: 0; display: grid; place-items: center; background: #0c1924a8; }
+    .message[hidden] { display: none; }
+    .card { max-width: min(470px, 90%); padding: 26px 32px; border: 1px solid #a2e8d4;
+      border-radius: 15px; background: #17323eea; text-align: center; box-shadow: 0 16px 45px #0007; }
+    .card h2 { margin: 0 0 8px; font-size: 26px; }
+    .card p { margin: 0 0 20px; color: #c7dfd8; }
+    .action { min-height: 42px; padding: 0 20px; border: 0; border-radius: 8px;
+      background: #75dbb9; color: #10272b; font-weight: 800; }
+    .toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;
+      padding: 13px 18px; background: #142333; }
+    .toolbar button, .touch button { min-height: 40px; padding: 0 15px; border: 1px solid #4c756e;
+      border-radius: 9px; background: #294d55; color: #e8fff6; font-weight: 700; }
+    .toolbar button:hover, .touch button:active { background: #376c6b; }
+    .toolbar p { margin: 0; color: #b3cbcb; font-size: 12px; }
+    .touch { display: flex; justify-content: space-between; margin-top: 16px; touch-action: none; }
+    .touch > div { display: flex; gap: 10px; }
+    .touch button { width: 72px; height: 58px; font-size: 21px; touch-action: none; user-select: none; }
+    .note { margin-top: 14px; }
+    @media (min-width: 900px) { .touch { display: none; } }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div class="header">
+      <div><div class="eyebrow">ORIGINAL PLATFORM ADVENTURE</div>
+        <h1>阿芽的星灯之旅</h1>
+        <div class="subtitle">原创人物与三个横版关卡 · 跳跃、踩踏、金币、危险与检查点</div>
+      </div>
+      <a href="/">返回角色动作实验室 ↗</a>
+    </div>
+    <div class="board">
+      <div class="hud"><div>关卡 <span id="level">1 / 3</span> · <span id="name">风铃草原</span></div>
+        <div>星币 <span id="coins">0</span></div><div>得分 <span id="score">0000</span></div>
+        <div>生命 <span id="lives">♥ ♥ ♥</span></div></div>
+      <div class="stage"><canvas id="game" width="960" height="540" aria-label="横版跳跃游戏画面"></canvas>
+        <div id="message" class="message" hidden><div class="card"><h2 id="messageTitle"></h2>
+          <p id="messageBody"></p><button id="messageAction" class="action" type="button"></button></div></div>
+      </div>
+      <div class="toolbar"><p>← → / A D 移动　·　空格 / W / ↑ 跳跃（按住更高）　·　P 暂停</p>
+        <div><button id="pause" type="button">暂停</button> <button id="restart" type="button">重新开始</button></div>
+      </div>
+    </div>
+    <div class="touch"><div><button data-control="left" aria-label="向左">◀</button>
+      <button data-control="right" aria-label="向右">▶</button></div>
+      <button data-control="jump" aria-label="跳跃">跳</button></div>
+    <p class="note">阿芽是一位戴着琥珀护目镜的小小探险家。收集星币、避开荆棘与巡逻生物，抵达每关的星灯；触碰发光旗帜会记录复活点。本关卡使用独立的浏览器本地模拟，现有 TPS 服务端逻辑保持独立。</p>
+  </main>
+  <script type="module" src="/web/platformer/game.mjs"></script>
+</body>
+</html>

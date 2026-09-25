@@ -47,6 +47,18 @@ sliders to add application-level latency, jitter, and packet loss. Use `WASD`, `
 left/right or `Q`/`E` to turn the view, up/down to change view pitch, `F` to fire, and `R` to respawn.
 The arena remains a 2D test view without a production skeleton runtime.
 
+## Platform adventure prototype
+
+Open `http://127.0.0.1:8000/platformer` for **A-Ya's Star Lantern Journey**, a separate,
+original browser platform game. It includes a drawn playable explorer, three authored side-scrolling
+levels, variable-height and buffered jumps, short ground grace, patrol enemies, stomping, coins,
+hazards, checkpoints, lives, and level progression. Keyboard and touch controls are provided.
+The platform game runs its simulation in the browser and does not share the TPS server's authoritative
+combat or network simulation. Its deterministic core is in `aster_game/web/platformer/world.mjs`;
+level layouts are data in `aster_game/web/platformer/levels.mjs`.
+
+Run `node --test tests/test_platformer.mjs` to check the platform game's movement and progression.
+
 The protocol is JSON. Client messages are `hello`, `join_game`, `input`, `attack`, `respawn`, and
 `ping`. Server messages include `welcome`, `joined`, `snapshot`, gameplay events, `pong`, and
 `error`. The detailed wire models live in `aster_game/network/messages.py`.
