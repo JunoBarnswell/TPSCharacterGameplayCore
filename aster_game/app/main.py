@@ -31,6 +31,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="Aster Gameplay Server", version="0.1.0", lifespan=lifespan)
 TEST_PAGE = Path(__file__).parents[1] / "web" / "test_client.html"
+PLATFORMER_PAGE = Path(__file__).parents[1] / "web" / "platformer.html"
 WEB_ASSETS = Path(__file__).parents[1] / "web"
 mimetypes.add_type("text/javascript", ".mjs")
 app.mount("/web", StaticFiles(directory=WEB_ASSETS), name="web-assets")
@@ -40,6 +41,11 @@ app.mount("/web", StaticFiles(directory=WEB_ASSETS), name="web-assets")
 @app.get("/test", include_in_schema=False)
 async def gameplay_test_page() -> FileResponse:
     return FileResponse(TEST_PAGE, media_type="text/html")
+
+
+@app.get("/platformer", include_in_schema=False)
+async def platformer_page() -> FileResponse:
+    return FileResponse(PLATFORMER_PAGE, media_type="text/html")
 
 
 @app.get("/healthz")

@@ -18,6 +18,23 @@ from aster_game.room.manager import RoomManager
 from aster_game.room.room import GameRoom
 
 
+def test_platformer_page_and_modules_are_served() -> None:
+    async def scenario() -> None:
+        transport = httpx.ASGITransport(app=app_module.app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test", trust_env=False
+        ) as client:
+            page = await client.get("/platformer")
+            assert page.status_code == 200
+            assert "阿芽的星灯之旅" in page.text
+            for path in ("game.mjs", "world.mjs", "levels.mjs"):
+                asset = await client.get(f"/web/platformer/{path}")
+                assert asset.status_code == 200
+                assert "javascript" in asset.headers["content-type"]
+
+    asyncio.run(scenario())
+
+
 def test_protocol_rejects_out_of_range_and_unknown_fields() -> None:
     for payload in (
         {"type": "input", "sequence": 1, "move_x": 2.0},
