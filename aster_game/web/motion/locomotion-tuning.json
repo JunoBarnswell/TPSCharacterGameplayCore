@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "phase_owner": "server",
+  "gaits": {
+    "walk": { "stride_length": 1.35, "reference_speed": 2.0 },
+    "run": { "stride_length": 2.25, "reference_speed": 4.5 },
+    "sprint": { "stride_length": 3.1, "reference_speed": 6.5 }
+  },
+  "markers": [
+    { "name": "LeftPlant", "phase": 0 },
+    { "name": "LeftPass", "phase": 0.25 },
+    { "name": "RightPlant", "phase": 0.5 },
+    { "name": "RightPass", "phase": 0.75 }
+  ]
+}

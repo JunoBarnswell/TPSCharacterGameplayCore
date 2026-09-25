@@ -17,6 +17,13 @@ const samples = [
   ["run_left", 4.5 / 6.5, -0.5],
   ["run_forward_left", 4.5 / 6.5, -0.25],
   ["sprint", 1, 0],
+  ["sprint_forward_right", 1, 0.25],
+  ["sprint_right", 1, 0.5],
+  ["sprint_backward_right", 1, 0.75],
+  ["sprint_backward", 1, 1],
+  ["sprint_backward_left", 1, -0.75],
+  ["sprint_left", 1, -0.5],
+  ["sprint_forward_left", 1, -0.25],
 ];
 
 function circularDistance(left, right) {

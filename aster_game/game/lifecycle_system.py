@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from aster_game.game.movement.animation_tuning import GAIT_STRIDE_LENGTHS
 from aster_game.game.movement.state import (
     Gait,
     LifeState,
@@ -29,11 +30,7 @@ class RespawnSystem:
 class StateSystem:
     """Updates orthogonal action/life channels and emits channel-change events."""
 
-    _stride_lengths = {
-        Gait.WALK: 1.35,
-        Gait.RUN: 2.25,
-        Gait.SPRINT: 3.1,
-    }
+    _stride_lengths = GAIT_STRIDE_LENGTHS
 
     def update(self, world: GameWorld, dt: float) -> None:
         for character in world.characters.values():

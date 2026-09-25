@@ -384,6 +384,14 @@ test("prediction advances gait phase by confirmed grounded distance and preserve
   assert.equal(airborne.gait_phase, state.gait_phase);
 });
 
+test("collision-free ground grace holds gait phase until contact confirmation", () => {
+  const state = { ...idleState(), grounded: true, movement_mode: "grounded",
+    ground_contact_confirmed: false, velocity: [0, 0, 2],
+    horizontal_speed: 2, gait_phase: 0.43 };
+  const next = predictMovementStep(state, input(1), tuning, dt, null);
+  assert.equal(next.gait_phase, 0.43);
+});
+
 test("direction changes retain momentum and 180 degree pivots brake harder", () => {
   const quarterTurn = solveHorizontalVelocity([0, 0, 6.5], [6.5, 0, 0], dt, true, tuning, "run");
   const pivot = solveHorizontalVelocity([0, 0, 6.5], [0, 0, -6.5], dt, true, tuning, "run");

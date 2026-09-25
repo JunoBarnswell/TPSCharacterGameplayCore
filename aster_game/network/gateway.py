@@ -109,7 +109,7 @@ async def handle_websocket(
             session.request_close(1002, "hello required")
             return
         if hello.protocol_version != 7:
-            _enqueue_error(session, "UNSUPPORTED_PROTOCOL", "Supported protocol version is 6")
+            _enqueue_error(session, "UNSUPPORTED_PROTOCOL", "Supported protocol version is 7")
             session.request_close(1002, "unsupported protocol")
             return
         session.protocol_version = hello.protocol_version
