@@ -236,6 +236,7 @@ def test_websocket_handshake_commands_snapshot_and_metrics(monkeypatch) -> None:
                     legacy_error = json.loads(await asyncio.wait_for(legacy_socket.recv(), 2.0))
                     assert legacy_error["type"] == "error"
                     assert legacy_error["code"] == "UNSUPPORTED_PROTOCOL"
+                    assert "version is 7" in legacy_error["message"]
 
                 await websocket.send(json.dumps({"type": "hello", "protocol_version": 7}))
                 welcome = json.loads(await asyncio.wait_for(websocket.recv(), 2.0))

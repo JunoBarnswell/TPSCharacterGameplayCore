@@ -26,6 +26,9 @@ export class FixedStepScheduler {
     }
     this.accumulatorMilliseconds = 0;
     this.lastTimeMilliseconds = nowMilliseconds;
+    this.dropped_time_ms = 0;
+    this.dropped_step_count = 0;
+    this.max_catchup_hit_count = 0;
   }
 
   advance(nowMilliseconds) {
@@ -38,9 +41,15 @@ export class FixedStepScheduler {
     }
     const elapsed = nowMilliseconds - this.lastTimeMilliseconds;
     this.lastTimeMilliseconds = nowMilliseconds;
+    const pending = this.accumulatorMilliseconds + elapsed;
+    const capped = this.stepMilliseconds * this.maxCatchUpSteps;
+    const dropped = Math.max(0, pending - capped);
+    this.dropped_time_ms += dropped;
+    this.dropped_step_count += Math.floor(dropped / this.stepMilliseconds);
+    if (dropped > 0) this.max_catchup_hit_count++;
     this.accumulatorMilliseconds = Math.min(
-      this.accumulatorMilliseconds + elapsed,
-      this.stepMilliseconds * this.maxCatchUpSteps,
+      pending,
+      capped,
     );
     const scheduledTimes = [];
     while (this.accumulatorMilliseconds + 1e-6 >= this.stepMilliseconds &&
@@ -49,6 +58,26 @@ export class FixedStepScheduler {
       scheduledTimes.push(nowMilliseconds - this.accumulatorMilliseconds);
     }
     return scheduledTimes;
+  }
+}
+
+export class InputEdgeBuffer {
+  constructor() { this.clear(); }
+  clear() { this.held = false; this.pressed = false; this.released = false; }
+  keyDown() {
+    if (!this.held) this.pressed = true;
+    this.held = true;
+  }
+  keyUp() {
+    if (this.held) this.released = true;
+    this.held = false;
+  }
+  consume() {
+    const sample = { jump: this.held || this.pressed,
+      jump_pressed: this.pressed, jump_released: this.released };
+    this.pressed = false;
+    this.released = false;
+    return sample;
   }
 }
 
@@ -375,6 +404,11 @@ function boundedYawHermite(yaw0, yawRate0, yaw1, yawRate1, alpha, duration, maxY
   const delta = angleDelta(yaw1, yaw0);
   if (Math.abs(delta) <= 1e-8 || duration <= 0) return normalizeDegrees(yaw0 + delta * alpha);
   const secant = delta / duration;
+  // Endpoints cannot both be reached under the cap when their secant exceeds it.
+  // Let the presentation lag behind the newer endpoint until subsequent snapshots.
+  if (Math.abs(secant) > maxYawRate) {
+    return normalizeDegrees(yaw0 + Math.sign(delta) * maxYawRate * duration * alpha);
+  }
   const tangent = (rate) => {
     const bounded = Math.max(-maxYawRate, Math.min(maxYawRate, rate));
     return bounded * secant < 0 ? 0 : bounded;
@@ -388,6 +422,17 @@ function boundedYawHermite(yaw0, yawRate0, yaw1, yawRate1, alpha, duration, maxY
     const scale = 3 / Math.sqrt(sum);
     m0 *= scale;
     m1 *= scale;
+  }
+  // The Hermite derivative is quadratic; its extrema are at the boundaries or vertex.
+  // Check those exact points instead of relying on a discrete sampling grid.
+  const quadratic = -6 * secant + 3 * (m0 + m1);
+  const linear = 6 * secant - 4 * m0 - 2 * m1;
+  const vertex = Math.abs(quadratic) > 1e-12 ? -linear / (2 * quadratic) : -1;
+  for (const t of [0, 1, ...(vertex > 0 && vertex < 1 ? [vertex] : [])]) {
+    const velocity = quadratic * t * t + linear * t + m0;
+    if (Math.abs(velocity) > maxYawRate + 1e-8) {
+      return normalizeDegrees(yaw0 + delta * alpha);
+    }
   }
   const unwrapped = hermite([yaw0], [m0], [yaw0 + delta], [m1], alpha, duration)[0];
   return normalizeDegrees(unwrapped);
@@ -455,18 +500,36 @@ export class RemoteSnapshotBuffer {
       this.lastSample = { ...this.samples[0], extrapolation_seconds: 0, interpolation_mode: "buffer-edge" };
       return this.lastSample;
     }
+    let boundedPreviousYaw = Number(this.samples[0].character_yaw ?? 0);
     for (let index = 0; index < this.samples.length - 1; index++) {
       const a = this.samples[index];
       const b = this.samples[index + 1];
-      if (renderTick < a.tick || renderTick > b.tick) continue;
+      if (renderTick > b.tick) {
+        const maxStep = this.maxVisualYawRate * (b.tick - a.tick) / tickRate;
+        boundedPreviousYaw = normalizeDegrees(boundedPreviousYaw + Math.max(-maxStep,
+          Math.min(maxStep, angleDelta(Number(b.character_yaw ?? 0), boundedPreviousYaw))));
+        continue;
+      }
+      if (renderTick < a.tick) continue;
       const ticks = b.tick - a.tick;
       const alpha = ticks > 0 ? (renderTick - a.tick) / ticks : 0;
       const duration = ticks / tickRate;
+      const reachableYaw = normalizeDegrees(boundedPreviousYaw + Math.max(
+        -this.maxVisualYawRate * duration,
+        Math.min(this.maxVisualYawRate * duration,
+          angleDelta(Number(b.character_yaw ?? 0), boundedPreviousYaw)),
+      ));
+      if (renderTick >= b.tick && index < this.samples.length - 2) {
+        boundedPreviousYaw = reachableYaw;
+        continue;
+      }
       const yaw = boundedYawHermite(
-        Number(a.character_yaw ?? 0),
-        Number(a.yaw_rate ?? 0),
-        Number(b.character_yaw ?? 0),
-        Number(b.yaw_rate ?? 0),
+        boundedPreviousYaw,
+        Math.abs(angleDelta(boundedPreviousYaw, Number(a.character_yaw ?? 0))) < 1e-5
+          ? Number(a.yaw_rate ?? 0) : 0,
+        reachableYaw,
+        Math.abs(angleDelta(reachableYaw, Number(b.character_yaw ?? 0))) < 1e-5
+          ? Number(b.yaw_rate ?? 0) : 0,
         alpha,
         duration,
         this.maxVisualYawRate,
@@ -475,9 +538,18 @@ export class RemoteSnapshotBuffer {
         a.position, a.velocity, b.position, b.velocity, alpha, duration, this.maxVisualVelocity,
       );
       this.lastSample = {
-        ...b,
+        ...(alpha >= 1 ? b : a),
         position: position.position,
         character_yaw: yaw,
+        velocity: a.velocity.map((value, axis) => value + (b.velocity[axis] - value) * alpha),
+        yaw_rate: a.yaw_rate + (b.yaw_rate - a.yaw_rate) * alpha,
+        gait_phase: Number.isFinite(a.gait_phase) && Number.isFinite(b.gait_phase)
+          ? ((a.gait_phase + angleDelta(b.gait_phase * 360, a.gait_phase * 360) * alpha / 360) % 1 + 1) % 1
+          : a.gait_phase,
+        phase_progress: Number.isFinite(a.phase_progress) && Number.isFinite(b.phase_progress) &&
+          a.locomotion_phase === b.locomotion_phase
+          ? a.phase_progress + (b.phase_progress - a.phase_progress) * alpha
+          : a.phase_progress,
         extrapolation_seconds: 0,
         interpolation_mode: position.mode,
       };
@@ -497,7 +569,7 @@ export class RemoteSnapshotBuffer {
       position: newest.position.map((value, index) =>
         value + newest.velocity[index] * velocityScale * seconds),
       character_yaw: normalizeDegrees(
-        newest.character_yaw + Math.max(
+        boundedPreviousYaw + Math.max(
           -this.maxVisualYawRate,
           Math.min(this.maxVisualYawRate, newest.yaw_rate ?? 0),
         ) * seconds,
@@ -506,6 +578,56 @@ export class RemoteSnapshotBuffer {
       interpolation_mode: seconds > 0 ? "extrapolation" : "hold",
     };
     return this.lastSample;
+  }
+}
+
+export class RemoteRenderMotionStateSampler {
+  constructor(...bufferOptions) {
+    this.buffer = new RemoteSnapshotBuffer(...bufferOptions);
+    this.revisions = new Map();
+    this.lastRenderTick = null;
+    this.lastEvents = new Map();
+  }
+
+  get samples() { return this.buffer.samples; }
+
+  push(snapshot) {
+    this.buffer.push(snapshot);
+    for (const [name, channel] of Object.entries(snapshot.action_channels ?? {})) {
+      if (!Number.isInteger(channel.sequence) || !Number.isFinite(channel.start_tick)) continue;
+      const entries = this.revisions.get(name) ?? [];
+      if (!entries.some((entry) => entry.sequence === channel.sequence &&
+          entry.event_id === channel.event_id)) entries.push({ ...channel,
+        effective_tick: channel.active ? channel.start_tick : snapshot.tick });
+      entries.sort((a, b) => a.effective_tick - b.effective_tick || a.sequence - b.sequence);
+      if (entries.length > 128) entries.splice(0, entries.length - 128);
+      this.revisions.set(name, entries);
+    }
+  }
+
+  sample(renderTick, tickRate, maxExtrapolationSeconds = 0.1) {
+    const motion = this.buffer.sample(renderTick, tickRate, maxExtrapolationSeconds);
+    if (!motion) return null;
+    const channels = {};
+    const events = [];
+    for (const [name, entries] of this.revisions) {
+      const revision = entries.filter((entry) => entry.effective_tick <= renderTick).at(-1);
+      if (!revision) continue;
+      const active = revision.active && (revision.end_tick == null || renderTick < revision.end_tick);
+      const duration = Number(revision.end_tick) - revision.start_tick;
+      channels[name] = { ...revision, active,
+        normalized_progress: active && Number.isFinite(duration) && duration > 0
+          ? Math.max(0, Math.min(1, (renderTick - revision.start_tick) / duration)) : 0 };
+      const key = `${revision.sequence}:${revision.event_id}`;
+      const crossed = this.lastRenderTick !== null && this.lastRenderTick < revision.start_tick &&
+        renderTick >= revision.start_tick;
+      if (name !== 'locomotion' && active && crossed && this.lastEvents.get(name) !== key) {
+        events.push({ channel: name, ...channels[name] });
+        this.lastEvents.set(name, key);
+      }
+    }
+    this.lastRenderTick = renderTick;
+    return { ...motion, action_channels: channels, action_events: events, render_tick: renderTick };
   }
 }
 

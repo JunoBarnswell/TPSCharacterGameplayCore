@@ -26,4 +26,4 @@ jobs:
       - name: Ruff
         run: uv run --locked ruff check .
       - name: Browser motion runtime tests
-        run: node --test tests/test_web_motion.mjs
+        run: node --test tests/*.mjs

@@ -5,6 +5,14 @@ function directionFromQuaternion([x, y, z, w]) {
   return [Math.sin(yaw), Math.cos(yaw)];
 }
 
+function localYawVector(vector, yaw) {
+  const radians = yaw * Math.PI / 180;
+  const sine = Math.sin(radians);
+  const cosine = Math.cos(radians);
+  return [vector[0] * cosine - vector[2] * sine, vector[1],
+    vector[0] * sine + vector[2] * cosine];
+}
+
 function requiredBoneIndex(skeleton, name) {
   const index = skeleton.indexByName.get(name);
   if (index === undefined) throw new RangeError(`pose feature bone '${name}' is missing`);
@@ -46,6 +54,19 @@ export function flattenPoseFeatureVector(features) {
   return parts.flat();
 }
 
+export function groupPoseFeatures(features) {
+  const flatten = (vectors) => vectors.flatMap((vector) => [...vector]);
+  return {
+    pose: flatten([features.pelvisPosition, features.leftFootPosition, features.rightFootPosition]),
+    trajectory: flatten(features.trajectory.map(({ position }) => position)),
+    velocity: flatten([features.rootVelocity, features.pelvisVelocity,
+      features.leftFootVelocity, features.rightFootVelocity,
+      ...features.trajectory.map(({ velocity }) => velocity)]),
+    facing: flatten([features.facing, ...features.trajectory.map(({ facing }) => facing)]),
+    contacts: [...features.contacts],
+  };
+}
+
 function relativePosition(world, index, rootPosition) {
   return world[index].translation.map((value, axis) => value - rootPosition[axis]);
 }
@@ -74,18 +95,21 @@ export function extractPoseFeatures({
     requiredBoneIndex(pose.skeleton, name),
   ]));
   const rootPosition = world[indices.root].translation;
-  const pelvisPosition = relativePosition(world, indices.pelvis, rootPosition);
-  const leftFootPosition = relativePosition(world, indices.leftFoot, rootPosition);
-  const rightFootPosition = relativePosition(world, indices.rightFoot, rootPosition);
+  const [rootSin, rootCos] = directionFromQuaternion(world[indices.root].rotation);
+  const rootYaw = Math.atan2(rootSin, rootCos) * 180 / Math.PI;
+  const canonical = (vector) => localYawVector(vector, rootYaw);
+  const pelvisPosition = canonical(relativePosition(world, indices.pelvis, rootPosition));
+  const leftFootPosition = canonical(relativePosition(world, indices.leftFoot, rootPosition));
+  const rightFootPosition = canonical(relativePosition(world, indices.rightFoot, rootPosition));
   const previousPositions = previousSample?.bonePositions ?? null;
   const leftFootVelocity = previousPositions
-    ? positionVelocity(world[indices.leftFoot].translation, previousPositions[bones.leftFoot], dt)
+    ? canonical(positionVelocity(world[indices.leftFoot].translation, previousPositions[bones.leftFoot], dt))
     : [0, 0, 0];
   const rightFootVelocity = previousPositions
-    ? positionVelocity(world[indices.rightFoot].translation, previousPositions[bones.rightFoot], dt)
+    ? canonical(positionVelocity(world[indices.rightFoot].translation, previousPositions[bones.rightFoot], dt))
     : [0, 0, 0];
   const pelvisVelocity = previousPositions
-    ? positionVelocity(world[indices.pelvis].translation, previousPositions[bones.pelvis], dt)
+    ? canonical(positionVelocity(world[indices.pelvis].translation, previousPositions[bones.pelvis], dt))
     : [0, 0, 0];
   const trajectoryFeatures = trajectory.map((sample) => {
     if (!sample || !Array.isArray(sample.position) || sample.position.length !== 3 ||
@@ -94,21 +118,21 @@ export function extractPoseFeatures({
         !Number.isFinite(sample.facing)) {
       throw new TypeError("trajectory feature samples must contain finite position, velocity, and facing");
     }
-    const facingRadians = sample.facing * Math.PI / 180;
+    const facingRadians = (sample.facing - rootYaw) * Math.PI / 180;
     return {
-      position: sample.position.map((value, axis) => value - rootPosition[axis]),
+      position: canonical(sample.position.map((value, axis) => value - rootPosition[axis])),
       facing: [Math.sin(facingRadians), Math.cos(facingRadians)],
-      velocity: [...sample.velocity],
+      velocity: canonical(sample.velocity),
     };
   });
-  const facing = directionFromQuaternion(world[indices.root].rotation);
+  const facing = [0, 1];
   const contactWeight = (value, name) => {
     if (typeof value === "boolean") return Number(value);
     if (Number.isFinite(value) && value >= 0 && value <= 1) return value;
     throw new TypeError(`${name} contact must be boolean or a weight in [0, 1]`);
   };
   const features = {
-    rootVelocity: rootVelocityVector,
+    rootVelocity: canonical(rootVelocityVector),
     facing,
     contacts: [
       contactWeight(contacts.left, "left foot"),

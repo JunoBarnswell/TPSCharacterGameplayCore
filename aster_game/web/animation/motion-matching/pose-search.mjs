@@ -1,5 +1,5 @@
 import { PoseDatabase } from "./pose-database.mjs";
-import { flattenPoseFeatureVector } from "./pose-features.mjs";
+import { flattenPoseFeatureVector, groupPoseFeatures } from "./pose-features.mjs";
 
 export const defaultPoseSearchWeights = Object.freeze({
   pose: 1.0,
@@ -18,45 +18,22 @@ const normalizationFloors = Object.freeze({
   contacts: 0.5,
 });
 
-function rmsDistance(left, right, name) {
-  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length ||
-      !left.every(Number.isFinite) || !right.every(Number.isFinite)) {
-    throw new RangeError(`pose search feature '${name}' is missing or has mismatched dimensions`);
-  }
-  if (left.length === 0) return 0;
-  const squared = left.reduce((sum, value, index) => sum + (value - right[index]) ** 2, 0);
-  return Math.sqrt(squared / left.length);
-}
-
-function flatten(values) {
-  return values.flatMap((value) => [...value]);
-}
-
-function featureGroups(features) {
-  return {
-    pose: flatten([features.pelvisPosition, features.leftFootPosition, features.rightFootPosition]),
-    trajectory: flatten(features.trajectory.map(({ position }) => position)),
-    velocity: flatten([
-      features.rootVelocity,
-      features.pelvisVelocity,
-      features.leftFootVelocity,
-      features.rightFootVelocity,
-      ...features.trajectory.map(({ velocity }) => velocity),
-    ]),
-    facing: flatten([features.facing, ...features.trajectory.map(({ facing }) => facing)]),
-    contacts: [...features.contacts],
-  };
-}
-
 function normalizationScale(vectors, floor) {
   const values = vectors.flat();
+  if (values.length === 0) return floor;
   const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
   const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
   return Math.max(floor, Math.sqrt(variance));
 }
 
 function normalizedRmsDistance(left, right, name, scale) {
-  return rmsDistance(left, right, name) / scale;
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length ||
+      !left.every(Number.isFinite) || !right.every(Number.isFinite)) {
+    throw new RangeError(`pose search feature '${name}' is missing or has mismatched dimensions`);
+  }
+  if (left.length === 0) return 0;
+  return Math.sqrt(left.reduce((sum, value, index) =>
+    sum + ((value - right[index]) / (Array.isArray(scale) ? scale[index] : scale)) ** 2, 0) / left.length);
 }
 
 function queryFeatures(features) {
@@ -87,16 +64,21 @@ export class PoseSearch {
     }
     this.database = database;
     this.weights = Object.freeze(normalized);
-    const groups = database.candidates.map(({ features }) => featureGroups(queryFeatures(features)));
+    this.groupedCandidates = database.candidates.map(({ features }) =>
+      groupPoseFeatures(queryFeatures(features)));
+    const groups = this.groupedCandidates;
     this.normalizationScales = Object.freeze(Object.fromEntries(
       Object.keys(normalizationFloors).map((name) => [
         name,
         normalizationScale(groups.map((group) => group[name]), normalizationFloors[name]),
       ]),
     ));
+    this.dimensionScales = Object.freeze(Object.fromEntries(Object.entries(database.groupNormalization)
+      .map(([name, dimensions]) => [name, Object.freeze(dimensions.map(({ scale }) => scale))])));
   }
 
-  search(features, { currentCandidateId = null, currentClipName = null, currentTimeSeconds = null, limit = 5 } = {}) {
+  search(features, { currentCandidateId = null, currentClipName = null, currentTimeSeconds = null,
+    limit = 5, tag = null, clipNames = null } = {}) {
     const query = queryFeatures(features);
     if (!Number.isInteger(limit) || limit < 1) throw new RangeError("pose search result limit must be positive");
     const queryVector = query.vector;
@@ -109,27 +91,28 @@ export class PoseSearch {
         canonicalQueryVector.some((value, index) => value !== queryVector[index])) {
       throw new RangeError("pose search feature vector does not match its structured features");
     }
-    const queryGroups = featureGroups(query);
-    const ranked = this.database.candidates.map((candidate) => {
-      const candidateFeatures = queryFeatures(candidate.features);
-      const candidateGroups = featureGroups(candidateFeatures);
+    const queryGroups = groupPoseFeatures(query);
+    const ranked = this.database.candidates.flatMap((candidate, index) => {
+      if ((tag !== null && candidate.metadata.tag !== tag) ||
+          (clipNames !== null && !clipNames.includes(candidate.clipName))) return [];
+      const candidateGroups = this.groupedCandidates[index];
       const poseCost = normalizedRmsDistance(
-        queryGroups.pose, candidateGroups.pose, "pose", this.normalizationScales.pose,
+        queryGroups.pose, candidateGroups.pose, "pose", this.dimensionScales.pose,
       );
       const trajectoryCost = normalizedRmsDistance(
         queryGroups.trajectory, candidateGroups.trajectory,
-        "trajectory", this.normalizationScales.trajectory,
+        "trajectory", this.dimensionScales.trajectory,
       );
       const velocityCost = normalizedRmsDistance(
         queryGroups.velocity, candidateGroups.velocity,
-        "velocity", this.normalizationScales.velocity,
+        "velocity", this.dimensionScales.velocity,
       );
       const facingCost = normalizedRmsDistance(
-        queryGroups.facing, candidateGroups.facing, "facing", this.normalizationScales.facing,
+        queryGroups.facing, candidateGroups.facing, "facing", this.dimensionScales.facing,
       );
       const contactCost = normalizedRmsDistance(
         queryGroups.contacts, candidateGroups.contacts,
-        "contacts", this.normalizationScales.contacts,
+        "contacts", this.dimensionScales.contacts,
       );
       const clipDistance = candidate.clipName === currentClipName &&
         Number.isFinite(currentTimeSeconds)
@@ -152,7 +135,7 @@ export class PoseSearch {
         facingCost * this.weights.facing +
         contactCost * this.weights.contacts +
         continuityCost * this.weights.continuity;
-      return {
+      return [{
         candidate,
         cost,
         poseCost,
@@ -161,7 +144,7 @@ export class PoseSearch {
         facingCost,
         contactCost,
         continuityCost,
-      };
+      }];
     }).sort((left, right) => left.cost - right.cost || left.candidate.id.localeCompare(right.candidate.id));
     const results = ranked.slice(0, limit);
     if (currentCandidateId !== null && !results.some(({ candidate }) => candidate.id === currentCandidateId)) {

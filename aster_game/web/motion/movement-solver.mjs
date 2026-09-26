@@ -1,3 +1,5 @@
+import { gaitStrideLengths } from './locomotion-tuning.mjs';
+
 export function normalizeDegrees(angle) {
   return ((angle + 180) % 360 + 360) % 360 - 180;
 }
@@ -26,7 +28,6 @@ export function evaluateResponseCurve(points, value) {
 const defaultAccelerationCurve = [[0, 1.35], [0.5, 1], [1, 0.65]];
 const defaultBrakingCurve = [[0, 0.6], [0.35, 1], [1, 1.35]];
 const defaultTurnSpeedCurve = [[0, 0.22], [0.25, 0.55], [1, 1]];
-const gaitStrideLengths = Object.freeze({ walk: 1.35, run: 2.25, sprint: 3.1 });
 
 export function desiredMotion(input, tuning) {
   const axisLength = Math.hypot(input.move_x, input.move_z);
@@ -339,7 +340,7 @@ export function predictMovementStep(state, input, tuning, dt, collisionWorld = n
   const turnRemaining = phase === "turn_in_place" ? angleDelta(desiredFacing, rotation.yaw) : 0;
   const actualGait = deriveActualGait(Math.hypot(velocity[0], velocity[2]), tuning);
   const gaitPhase = nextGrounded && actualGait !== "idle" &&
-    collision?.ground_contact_confirmed !== false
+    (collision?.ground_contact_confirmed ?? state.ground_contact_confirmed) !== false
     ? ((Number(state.gait_phase ?? 0) + Math.hypot(velocity[0], velocity[2]) * dt /
       (gaitStrideLengths[actualGait] ?? gaitStrideLengths.run)) % 1 + 1) % 1
     : Number(state.gait_phase ?? 0);

@@ -100,14 +100,14 @@ export function warpRootMotionDelta(rootMotionDelta, currentTransform, remaining
   const remainingLength = Math.hypot(...remainingWorld);
   const translationShare = stepLength + remainingLength > 1e-8
     ? stepLength / (stepLength + remainingLength)
-    : 1;
+    : 0;
   const warpedWorldTranslation = stepWorld.map((value, axis) =>
     value + endpointError[axis] * translationShare * effectiveWeight);
   const warpedTranslation = worldToLocal(warpedWorldTranslation, currentTransform.character_yaw);
   const baselineYawEnd = currentTransform.character_yaw + rootMotionDelta.yawDelta + remainingYawDegrees;
   const yawError = angleDelta(target.yaw, baselineYawEnd);
   const yawDenominator = Math.abs(rootMotionDelta.yawDelta) + Math.abs(remainingYawDegrees);
-  const yawShare = yawDenominator > 1e-8 ? Math.abs(rootMotionDelta.yawDelta) / yawDenominator : 1;
+  const yawShare = yawDenominator > 1e-8 ? Math.abs(rootMotionDelta.yawDelta) / yawDenominator : 0;
   return {
     translation: warpedTranslation,
     yawDelta: rootMotionDelta.yawDelta + yawError * yawShare * effectiveWeight,

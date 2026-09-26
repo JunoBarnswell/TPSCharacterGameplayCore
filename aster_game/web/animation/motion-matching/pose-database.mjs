@@ -1,5 +1,5 @@
 import { Pose } from "../pose.mjs";
-import { flattenPoseFeatureVector } from "./pose-features.mjs";
+import { flattenPoseFeatureVector, groupPoseFeatures } from "./pose-features.mjs";
 
 function featureVector(candidate) {
   const vector = candidate.features?.vector ?? candidate.featureVector;
@@ -58,9 +58,35 @@ export class PoseDatabase {
     this.featureLength = null;
     this.skeleton = null;
     for (const candidate of candidates) this.add(candidate);
+    this.normalization = this.computeNormalization();
+    this.groupNormalization = Object.freeze(Object.fromEntries(
+      ['pose', 'trajectory', 'velocity', 'facing', 'contacts'].map((name) => {
+        const vectors = this.candidates.map(({ features }) => groupPoseFeatures(features)[name]);
+        const floor = { pose: 0.25, trajectory: 0.5, velocity: 1,
+          facing: 0.25, contacts: 0.5 }[name];
+        return [name, Object.freeze(Array.from({ length: vectors[0]?.length ?? 0 }, (_, index) => {
+          const values = vectors.map((vector) => vector[index]);
+          const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+          const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
+          return Object.freeze({ mean, scale: Math.max(floor, Math.sqrt(variance)) });
+        }))];
+      }),
+    ));
+    Object.freeze(this.candidates);
+  }
+
+  computeNormalization(floor = 0.25) {
+    if (this.candidates.length === 0) return Object.freeze([]);
+    return Object.freeze(Array.from({ length: this.featureLength }, (_, index) => {
+      const values = this.candidates.map(({ featureVector }) => featureVector[index]);
+      const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+      const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
+      return Object.freeze({ mean, scale: Math.max(floor, Math.sqrt(variance)) });
+    }));
   }
 
   add(candidate) {
+    if (Object.isFrozen(this.candidates)) throw new RangeError('pose database is frozen after build');
     if (!candidate || typeof candidate.id !== "string" || candidate.id.length === 0 ||
         typeof candidate.clipName !== "string" || candidate.clipName.length === 0 ||
         !Number.isFinite(candidate.timeSeconds) || candidate.timeSeconds < 0 ||
